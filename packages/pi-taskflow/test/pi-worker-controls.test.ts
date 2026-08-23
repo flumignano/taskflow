@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import type { AgentConfig, ResolvedSkill } from "taskflow-core";
-import { runAgentTask } from "../src/runner.ts";
+import { CTX_TOOL_NAMES, runAgentTask } from "../src/runner.ts";
 import { resolveProjectPiSkills } from "../src/skills.ts";
 
 function writeSkill(root: string, directory: string, name: string, body: string): string {
@@ -116,6 +116,44 @@ test("Pi launch controls: prompt mode and explicit skills build exact argv", asy
 		const selected = many.argv.flatMap((arg, index) => arg === "--skill" ? [many.argv[index + 1]] : []);
 		assert.deepEqual(selected, [firstPath, secondPath]);
 		assert.equal(many.argv.includes("--no-skills"), true);
+
+		const ctxDir = path.join(cwd, "shared-context");
+		const sharingOpts = { tools: ["read"], ctxDir, nodeId: "phase:work" };
+
+		fs.rmSync(capture, { force: true });
+		const contextExpansion = await runAgentTask(
+			cwd,
+			[worker(undefined, ["read"])],
+			"worker",
+			"share context",
+			sharingOpts,
+		);
+		assert.equal(contextExpansion.exitCode, 1);
+		assert.match(contextExpansion.errorMessage ?? contextExpansion.stderr, /context-sharing/i);
+		for (const tool of CTX_TOOL_NAMES) {
+			assert.match(contextExpansion.errorMessage ?? contextExpansion.stderr, new RegExp(`\\b${tool}\\b`));
+		}
+		assert.equal(fs.existsSync(capture), false, "unauthorized context tools must fail before child spawn");
+
+		const completeContextEnvelope = ["read", ...CTX_TOOL_NAMES];
+		const contextAllowed = await invokeAndCapture(
+			cwd,
+			capture,
+			worker(undefined, completeContextEnvelope),
+			sharingOpts,
+		);
+		assert.equal(
+			contextAllowed.argv[contextAllowed.argv.indexOf("--tools") + 1],
+			completeContextEnvelope.join(","),
+		);
+
+		const legacyContext = await invokeAndCapture(cwd, capture, worker(), {
+			ctxDir,
+			nodeId: "phase:legacy",
+		});
+		assert.equal(legacyContext.argv.includes("--tools"), false);
+		assert.equal(legacyContext.argv.includes("--no-tools"), false);
+		assert.equal(legacyContext.argv.includes("--extension"), true);
 
 		fs.rmSync(capture, { force: true });
 		const expanded = await runAgentTask(cwd, [worker(undefined, ["read"])], "worker", "expand", {

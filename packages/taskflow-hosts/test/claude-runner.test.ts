@@ -191,10 +191,11 @@ test("claude runner seam: unsafe tools fail closed before spawning with actionab
 	}
 });
 
-test("claude runner seam: unspecified tools spawn with read-only flags", async () => {
+test("claude runner seam: omitted and append prompt modes retain legacy append behavior", async () => {
 	await withFakeClaude(
 		`case " $* " in *" --tools Read,Grep,Glob,WebFetch,WebSearch --allowedTools Read,Grep,Glob,WebFetch,WebSearch "*) ;; *) exit 64 ;; esac
 case " $* " in *" bypassPermissions "*) exit 65 ;; esac
+case " $* " in *" --append-system-prompt Review carefully. "*) ;; *) exit 66 ;; esac
 printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"safe","total_cost_usd":0,"usage":{"input_tokens":1,"output_tokens":1}}'`,
 		async (bin) => {
 			const previousBin = process.env.PI_TASKFLOW_CLAUDE_BIN;
@@ -202,9 +203,14 @@ printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"num_turns
 			try {
 				process.env.PI_TASKFLOW_CLAUDE_BIN = bin;
 				delete process.env[CLAUDE_UNSAFE_BYPASS_ENV];
-				const result = await runClaudeAgentTask("/tmp", TEST_AGENT, "reviewer", "inspect", {});
-				assert.equal(result.exitCode, 0, result.stderr);
-				assert.equal(result.output, "safe");
+				for (const mode of [undefined, "append"] as const) {
+					const agents = mode === undefined
+						? TEST_AGENT
+						: [{ ...TEST_AGENT[0], systemPromptMode: mode }];
+					const result = await runClaudeAgentTask("/tmp", agents, "reviewer", "inspect", {});
+					assert.equal(result.exitCode, 0, `${mode ?? "omitted"}: ${result.stderr}`);
+					assert.equal(result.output, "safe");
+				}
 			} finally {
 				if (previousBin === undefined) delete process.env.PI_TASKFLOW_CLAUDE_BIN;
 				else process.env.PI_TASKFLOW_CLAUDE_BIN = previousBin;

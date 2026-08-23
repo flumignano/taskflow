@@ -48,6 +48,7 @@ import {
 } from "taskflow-core";
 import { emptyUsage } from "taskflow-core";
 import { filteredChildEnv } from "./child-env.ts";
+import { unsupportedSystemPromptModeResult } from "./system-prompt-mode.ts";
 
 /** The Claude tools a read-only phase may use. `Bash` is excluded — Claude has
  *  no read-only shell (unlike codex's read-only OS sandbox, which still allows
@@ -385,6 +386,8 @@ export async function runClaudeAgentTask(
 ): Promise<RunResult> {
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) return unknownAgentResult(agentName, task, agents);
+	const promptModeError = unsupportedSystemPromptModeResult(agent, task, "Claude Code");
+	if (promptModeError) return promptModeError;
 
 	const model = opts.model ?? agent.model;
 	const tools = opts.tools ?? agent.tools;

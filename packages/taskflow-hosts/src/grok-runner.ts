@@ -51,6 +51,7 @@ import {
 } from "taskflow-core";
 import { emptyUsage } from "taskflow-core";
 import { filteredChildEnv } from "./child-env.ts";
+import { unsupportedSystemPromptModeResult } from "./system-prompt-mode.ts";
 
 /**
  * Grok built-in tool ids a read-only phase may use. Web ids are deliberately
@@ -384,6 +385,8 @@ export async function runGrokAgentTask(
 ): Promise<RunResult> {
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) return unknownAgentResult(agentName, task, agents);
+	const promptModeError = unsupportedSystemPromptModeResult(agent, task, "Grok Build");
+	if (promptModeError) return promptModeError;
 
 	const model = opts.model ?? agent.model;
 	const tools = opts.tools ?? agent.tools;

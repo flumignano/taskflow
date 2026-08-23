@@ -181,7 +181,7 @@ export interface AgentConfig {
 	filePath: string;
 }
 
-/** Return a fail-closed diagnostic when phase.tools exceeds an agent envelope. */
+/** Return a fail-closed diagnostic when effective tools exceed an agent envelope. */
 export function agentToolExpansionError(
 	agent: AgentConfig,
 	requested: readonly string[] | undefined,
@@ -190,7 +190,7 @@ export function agentToolExpansionError(
 	const allowed = new Set(agent.tools);
 	const unauthorized = [...new Set(requested.filter((tool) => !allowed.has(tool)))];
 	if (unauthorized.length === 0) return undefined;
-	return `Agent '${agent.name}' tool ceiling forbids phase.tools expansion; unauthorized tool(s): ${unauthorized.join(", ")}. Declared tools: ${agent.tools.join(", ") || "<none>"}`;
+	return `Agent '${agent.name}' tool ceiling forbids effective tool set expansion; unauthorized tool(s): ${unauthorized.join(", ")}. Declared tools: ${agent.tools.join(", ") || "<none>"}`;
 }
 
 class AgentConfigurationError extends Error {}

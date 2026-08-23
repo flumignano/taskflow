@@ -46,6 +46,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { homedir, tmpdir } from "node:os";
 import { join, resolve as resolvePath, sep } from "node:path";
 import { filteredChildEnv } from "./child-env.ts";
+import { unsupportedSystemPromptModeResult } from "./system-prompt-mode.ts";
 
 /** Mirrors taskflow-core TRANSPORT_ERROR_PLACEHOLDER (not always re-exported). */
 const UPSTREAM_ERROR_PLACEHOLDER = "(upstream error: subagent failed; see error)";
@@ -908,6 +909,8 @@ export async function runHermesAgentTask(
 ): Promise<RunResult> {
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) return unknownAgentResult(agentName, task, agents);
+	const promptModeError = unsupportedSystemPromptModeResult(agent, task, "Hermes");
+	if (promptModeError) return promptModeError;
 
 	const model = opts.model ?? agent.model;
 	const thinking = opts.thinking ?? agent.thinking ?? globalThinking;

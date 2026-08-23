@@ -385,7 +385,21 @@ export async function runAgentTask(
 ): Promise<RunResult> {
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) return unknownAgentResult(agentName, task, agents);
-	const toolError = agentToolExpansionError(agent, opts.tools);
+
+	const ctxEnabledEarly = Boolean(opts.ctxDir && opts.nodeId);
+	let tools = opts.tools ?? agent.tools;
+	// Context sharing registers ctx_* tools and, when Pi is launched with a
+	// non-empty whitelist, those tools become part of the child's effective
+	// capability set. Derive that complete set before enforcing the agent ceiling.
+	let contextToolsInjected = false;
+	if (ctxEnabledEarly && tools !== undefined && tools.length > 0) {
+		contextToolsInjected = true;
+		tools = [...new Set([...tools, ...CTX_TOOL_NAMES])];
+	}
+	const expansionError = agentToolExpansionError(agent, tools);
+	const toolError = expansionError && contextToolsInjected
+		? `Context-sharing capability injects effective Pi tools. ${expansionError}`
+		: expansionError;
 	if (toolError) {
 		return {
 			agent: agentName,
@@ -398,6 +412,7 @@ export async function runAgentTask(
 			errorMessage: toolError,
 		};
 	}
+
 	const piChild = normalizePiChildSettings(piChildRaw);
 	let configuredExtensions: string[];
 	try {
@@ -412,15 +427,6 @@ export async function runAgentTask(
 
 	const model = opts.model ?? agent.model;
 	const thinking = opts.thinking ?? agent.thinking ?? globalThinking;
-	const ctxEnabledEarly = Boolean(opts.ctxDir && opts.nodeId);
-	let tools = opts.tools ?? agent.tools;
-	// If the agent restricts tools to a whitelist, the ctx_* tools we register
-	// would be filtered out by `--tools` even though they're registered. When
-	// context sharing is on, extend the whitelist so the subagent can actually
-	// call them. (No whitelist = all tools available = nothing to do.)
-	if (ctxEnabledEarly && tools && tools.length > 0) {
-		tools = [...new Set([...tools, ...CTX_TOOL_NAMES])];
-	}
 
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
 	if (piChild.resourceProfile !== "inherit") args.push("--no-extensions");
