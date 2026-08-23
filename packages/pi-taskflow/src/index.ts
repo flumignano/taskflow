@@ -613,6 +613,7 @@ async function runFlow(
 			// this (as the pre-refactor code could, when the default was runAgentTask
 			// in the same package) now silently breaks all phase execution.
 			runTask: piRunner.runTask,
+			systemPromptModes: piRunner.systemPromptModes,
 			resolveSkills: piRunner.resolveSkills,
 			requestApproval,
 			loadSavedFlow: (name: string) => {
@@ -1296,6 +1297,7 @@ export default function (pi: ExtensionAPI) {
 					globalThinking: settings.globalThinking,
 					signal,
 					runTask: piRunner.runTask,
+					systemPromptModes: piRunner.systemPromptModes,
 					resolveSkills: piRunner.resolveSkills,
 					loadSavedFlow: (name: string) => {
 						const saved = getFlow(ctx.cwd, name);
@@ -2066,6 +2068,7 @@ export default function (pi: ExtensionAPI) {
 					agents,
 					globalThinking: settings.globalThinking,
 					runTask: piRunner.runTask,
+					systemPromptModes: piRunner.systemPromptModes,
 					resolveSkills: piRunner.resolveSkills,
 					loadSavedFlow: (name: string) => {
 						const saved = getFlow(ctx.cwd, name);

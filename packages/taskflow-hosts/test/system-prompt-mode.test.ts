@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { AgentConfig, RunOptions, RunResult } from "taskflow-core";
-import { runClaudeAgentTask } from "../src/claude-runner.ts";
-import { runCodexAgentTask } from "../src/codex-runner.ts";
-import { runGrokAgentTask } from "../src/grok-runner.ts";
-import { runHermesAgentTask } from "../src/hermes-runner.ts";
-import { runOpencodeAgentTask } from "../src/opencode-runner.ts";
+import type { AgentConfig, RunOptions, RunResult, SubagentRunner } from "taskflow-core";
+import { claudeSubagentRunner, runClaudeAgentTask } from "../src/claude-runner.ts";
+import { codexSubagentRunner, runCodexAgentTask } from "../src/codex-runner.ts";
+import { grokSubagentRunner, runGrokAgentTask } from "../src/grok-runner.ts";
+import { hermesSubagentRunner, runHermesAgentTask } from "../src/hermes-runner.ts";
+import { opencodeSubagentRunner, runOpencodeAgentTask } from "../src/opencode-runner.ts";
 
 type HostRunner = (
 	defaultCwd: string,
@@ -30,16 +30,18 @@ const UNSUPPORTED_HOSTS: ReadonlyArray<{
 	host: string;
 	binEnv: string;
 	run: HostRunner;
+	runner: SubagentRunner<AgentConfig>;
 }> = [
-	{ host: "Codex", binEnv: "PI_TASKFLOW_CODEX_BIN", run: runCodexAgentTask },
-	{ host: "Claude Code", binEnv: "PI_TASKFLOW_CLAUDE_BIN", run: runClaudeAgentTask },
-	{ host: "OpenCode", binEnv: "PI_TASKFLOW_OPENCODE_BIN", run: runOpencodeAgentTask },
-	{ host: "Grok Build", binEnv: "PI_TASKFLOW_GROK_BIN", run: runGrokAgentTask },
-	{ host: "Hermes", binEnv: "PI_TASKFLOW_HERMES_BIN", run: runHermesAgentTask },
+	{ host: "Codex", binEnv: "PI_TASKFLOW_CODEX_BIN", run: runCodexAgentTask, runner: codexSubagentRunner },
+	{ host: "Claude Code", binEnv: "PI_TASKFLOW_CLAUDE_BIN", run: runClaudeAgentTask, runner: claudeSubagentRunner },
+	{ host: "OpenCode", binEnv: "PI_TASKFLOW_OPENCODE_BIN", run: runOpencodeAgentTask, runner: opencodeSubagentRunner },
+	{ host: "Grok Build", binEnv: "PI_TASKFLOW_GROK_BIN", run: runGrokAgentTask, runner: grokSubagentRunner },
+	{ host: "Hermes", binEnv: "PI_TASKFLOW_HERMES_BIN", run: runHermesAgentTask, runner: hermesSubagentRunner },
 ];
 
 test("unsupported hosts reject systemPromptMode replace before process spawn", async () => {
-	for (const { host, binEnv, run } of UNSUPPORTED_HOSTS) {
+	for (const { host, binEnv, run, runner } of UNSUPPORTED_HOSTS) {
+		assert.deepEqual(runner.systemPromptModes, ["append"], `${host} must advertise append-only admission`);
 		const previous = process.env[binEnv];
 		process.env[binEnv] = `/definitely/not/a/${host.toLowerCase().replaceAll(" ", "-")}/binary`;
 		try {

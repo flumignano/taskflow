@@ -1102,6 +1102,7 @@ export async function runHermesAgentTask(
 
 /** The Hermes host's `SubagentRunner`. Drops into `RuntimeDeps.runTask`. */
 export const hermesSubagentRunner: SubagentRunner<AgentConfig> = {
+	systemPromptModes: ["append"],
 	runTask: runHermesAgentTask,
 	usageAccounting: "unavailable",
 };

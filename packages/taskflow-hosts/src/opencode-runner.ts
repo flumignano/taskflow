@@ -360,5 +360,6 @@ export async function runOpencodeAgentTask(
  * like the pi/codex/claude runners, so the engine runs unchanged on OpenCode.
  */
 export const opencodeSubagentRunner: SubagentRunner<AgentConfig> = {
+	systemPromptModes: ["append"],
 	runTask: runOpencodeAgentTask,
 };

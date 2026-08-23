@@ -13,6 +13,8 @@ import { aggregateUsage, emptyUsage } from "../usage.ts";
 import type { TraceEvent, TraceSink } from "../trace.ts";
 import { overBudget as overBudgetCheck } from "../deterministic.ts";
 import { safeParse } from "../interpolate.ts";
+import { systemPromptModeAdmissionFailure } from "../host-capabilities.ts";
+import type { SystemPromptMode } from "../host/runner-types.ts";
 import {
 	EVENT_KERNEL_PHASE_TYPES,
 	stepPhase,
@@ -46,6 +48,7 @@ export interface EventKernelDeps {
 	signal?: AbortSignal;
 	globalThinking?: string;
 	usageAccounting?: "available" | "tokens-only" | "unavailable";
+	systemPromptModes?: readonly SystemPromptMode[];
 	trace?: TraceSink;
 	persist?: (state: RunState) => void;
 	onProgress?: (state: RunState) => void;
@@ -192,9 +195,34 @@ function emitLifecycle(
  */
 export async function runEventKernel(state: RunState, deps: EventKernelDeps): Promise<EventKernelResult> {
 	const def = state.def;
+	const args = resolveArgs(def, state.args);
+	const promptModeFailure = systemPromptModeAdmissionFailure(
+		def,
+		deps.agents,
+		deps.systemPromptModes,
+		{ loadFlow: deps.loadFlow, args },
+	);
+	if (promptModeFailure) {
+		const finalOutput = `Taskflow '${def.name}' failed host capability admission: ${promptModeFailure.error}`;
+		state.status = "failed";
+		state.finalOutput = finalOutput;
+		state.outputSourcePhaseId = undefined;
+		state.phases[promptModeFailure.rootPhaseId] = {
+			id: promptModeFailure.rootPhaseId,
+			status: "failed",
+			error: promptModeFailure.error,
+			endedAt: Date.now(),
+			usage: emptyUsage(),
+		};
+		try {
+			deps.persist?.(state);
+		} catch {
+			/* fail-open */
+		}
+		return { state, finalOutput, ok: false, totalUsage: emptyUsage() };
+	}
 	const layers = topoLayers(def.phases);
 	const steps: StepContext["steps"] = {};
-	const args = resolveArgs(def, state.args);
 	const byId = new Map(def.phases.map((p) => [p.id, p]));
 
 	state.status = "running";

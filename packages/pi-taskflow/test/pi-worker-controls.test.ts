@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import type { AgentConfig, ResolvedSkill } from "taskflow-core";
-import { CTX_TOOL_NAMES, runAgentTask } from "../src/runner.ts";
+import { CTX_TOOL_NAMES, createPiSubagentRunner, piSubagentRunner, runAgentTask } from "../src/runner.ts";
 import { resolveProjectPiSkills } from "../src/skills.ts";
 
 function writeSkill(root: string, directory: string, name: string, body: string): string {
@@ -46,6 +46,11 @@ async function invokeAndCapture(
 		systemPrompt: string | null;
 	};
 }
+
+test("Pi runner advertises append and replace prompt admission", () => {
+	assert.deepEqual(piSubagentRunner.systemPromptModes, ["append", "replace"]);
+	assert.deepEqual(createPiSubagentRunner().systemPromptModes, ["append", "replace"]);
+});
 
 test("Pi launch controls: prompt mode and explicit skills build exact argv", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "tf-pi-controls-"));

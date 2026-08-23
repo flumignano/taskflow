@@ -16,7 +16,8 @@ import { agentToolExpansionError, type AgentConfig } from "./agents.ts";
 import { coerceArray, evaluateCondition, interpolate, interpolateValue, type InterpolationContext, safeParse, tryEvaluateCondition } from "./interpolate.ts";
 import { contractViolations } from "./contract.ts";
 import { failedResultDisplayOutput, hasMeaningfulFailedOutput, isFailed, isTransientError, mapWithConcurrencyLimit, PHASE_TIMEOUT_ABORT_GRACE_MS, sanitizeErrorMessage } from "./runner-core.ts";
-import type { LiveUpdate, ResolvedSkill, RunResult, SkillResolver, SubagentRunner } from "./host/runner-types.ts";
+import type { LiveUpdate, ResolvedSkill, RunResult, SkillResolver, SubagentRunner, SystemPromptMode } from "./host/runner-types.ts";
+import { systemPromptModeAdmissionFailure } from "./host-capabilities.ts";
 
 /** The host-neutral subagent runner signature the engine drives. A host adapter
  *  (pi, codex) injects a concrete `runTask` via `RuntimeDeps`. */
@@ -99,6 +100,9 @@ export interface RuntimeDeps {
 	 *  cannot observe usage must reject every actually-executed budgeted flow,
 	 *  including nested/dynamic flows, rather than silently bypassing the cap. */
 	usageAccounting?: "available" | "tokens-only" | "unavailable";
+	/** Host-owned prompt integration modes. Omission is append-only; explicit
+	 * agent replacement requests fail closed before cache/resume admission. */
+	systemPromptModes?: readonly SystemPromptMode[];
 	signal?: AbortSignal;
 	/** Persist run state after each phase (for resume). */
 	persist?: (state: RunState) => void;
@@ -3186,6 +3190,18 @@ async function executePhaseInner(
 				return failPhase(phase.id, `dynamic nested flow '${subDef.name}' is invalid: ${dynamicChild.errors.join("; ")}`);
 			}
 		}
+		const nestedPromptModeFailure = systemPromptModeAdmissionFailure(
+			subDef,
+			deps.agents,
+			deps.systemPromptModes,
+			{ loadFlow: deps.loadFlow, args: subArgs },
+		);
+		if (nestedPromptModeFailure) {
+			return failPhase(
+				phase.id,
+				`flow phase '${phase.id}': sub-flow '${subDef.name}' failed host capability admission: ${nestedPromptModeFailure.error}`,
+			);
+		}
 		// Re-check the exact loaded definition at the cache boundary. A loader may
 		// change between the root pre-scan and this phase (or return aliases), and
 		// a bridge-bearing child must never be skipped by a cached parent result.
@@ -4301,6 +4317,15 @@ export async function recomputeTaskflow(
 	if (invocationErrors.length > 0) {
 		throw new Error(`Taskflow '${newState.def.name}' invocation is invalid: ${invocationErrors.join("; ")}`);
 	}
+	const promptModeFailure = systemPromptModeAdmissionFailure(
+		newState.def,
+		deps.agents,
+		deps.systemPromptModes,
+		{ loadFlow: deps.loadFlow, args: newState.args },
+	);
+	if (promptModeFailure) {
+		throw new Error(`Taskflow '${newState.def.name}' failed host capability admission: ${promptModeFailure.error}`);
+	}
 	const bridgeTree = flowTreeUsesCwdBridge(newState.def, deps.loadFlow);
 	// Once a run has exercised the compatibility bridge, its persisted root
 	// binding is permanent provenance. A later definition downgrade must not
@@ -4525,6 +4550,24 @@ export async function executeTaskflow(state: RunState, deps: RuntimeDeps): Promi
 		}
 	}
 
+	const promptModeFailure = systemPromptModeAdmissionFailure(
+		def,
+		deps.agents,
+		deps.systemPromptModes,
+		{ loadFlow: deps.loadFlow, args: state.args },
+	);
+	if (promptModeFailure) {
+		state.phases[promptModeFailure.rootPhaseId] = {
+			id: promptModeFailure.rootPhaseId,
+			status: "failed",
+			error: promptModeFailure.error,
+			endedAt: Date.now(),
+			usage: emptyUsage(),
+		};
+		return failBeforeExecution(
+			`Taskflow '${def.name}' failed host capability admission: ${promptModeFailure.error}`,
+		);
+	}
 	// Host-independent capability preflight. This runs before event-kernel
 	// admission and before any cache lookup or child launch.
 	for (const phase of def.phases) {
@@ -4676,6 +4719,7 @@ export async function executeTaskflow(state: RunState, deps: RuntimeDeps): Promi
 				signal: deps.signal,
 				globalThinking: deps.globalThinking,
 				usageAccounting: deps.usageAccounting,
+				systemPromptModes: deps.systemPromptModes,
 				trace: deps.trace,
 				persist: deps.persist,
 				onProgress: deps.onProgress,

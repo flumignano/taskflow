@@ -447,6 +447,7 @@ export async function runGrokAgentTask(
  * like the other host runners, so the engine runs unchanged on Grok Build.
  */
 export const grokSubagentRunner: SubagentRunner<AgentConfig> = {
+	systemPromptModes: ["append"],
 	runTask: runGrokAgentTask,
 	usageAccounting: "unavailable",
 };

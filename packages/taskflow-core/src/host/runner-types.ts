@@ -20,6 +20,9 @@
 
 import type { UsageStats } from "../usage.ts";
 
+/** Agent-body integration modes a host runner may support. */
+export type SystemPromptMode = "append" | "replace";
+
 /**
  * Minimal structural `Message` shape the core parser needs. Vendored (instead of
  * importing `@earendil-works/pi-ai`) so `taskflow-core` stays host-SDK-free. A
@@ -145,6 +148,9 @@ export interface SubagentRunner<TAgent = unknown> {
 	/** Whether this host reports authoritative token/cost usage. `unavailable`
 	 * makes runtime budget declarations fail closed at every execution boundary. */
 	readonly usageAccounting?: "available" | "tokens-only" | "unavailable";
+	/** Host-owned prompt integration capability. Omission is treated as append-only;
+	 * an explicit agent `replace` request must fail closed before result reuse. */
+	readonly systemPromptModes?: readonly SystemPromptMode[];
 	/** Optional host capability. Omission makes an explicit phase `skills` selection fail closed. */
 	readonly resolveSkills?: SkillResolver;
 	runTask(

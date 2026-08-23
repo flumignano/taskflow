@@ -308,6 +308,7 @@ export async function runCodexAgentTask(
  * like the pi/codex/claude/opencode runners, so the engine runs unchanged on Codex.
  */
 export const codexSubagentRunner: SubagentRunner<AgentConfig> = {
+	systemPromptModes: ["append"],
 	runTask: runCodexAgentTask,
 	usageAccounting: "tokens-only",
 };

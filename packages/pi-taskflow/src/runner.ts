@@ -538,6 +538,7 @@ export async function runAgentTask(
  * `codexSubagentRunner` against the same `SubagentRunner` contract.
  */
 export const piSubagentRunner: SubagentRunner<AgentConfig> = {
+	systemPromptModes: ["append", "replace"],
 	runTask: runAgentTask,
 	resolveSkills: resolveProjectPiSkills,
 };
@@ -551,6 +552,7 @@ export function createPiSubagentRunner(raw: unknown = DEFAULT_PI_CHILD_SETTINGS)
 		extensions: [...normalized.extensions],
 	};
 	return {
+		systemPromptModes: ["append", "replace"],
 		resolveSkills: resolveProjectPiSkills,
 		runTask: (cwd, agents, agentName, task, opts, globalThinking) =>
 			runAgentTask(cwd, agents, agentName, task, opts, globalThinking, snapshot),

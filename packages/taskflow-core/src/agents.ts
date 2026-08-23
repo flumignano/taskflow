@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir } from "./paths.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
+import type { SystemPromptMode } from "./host/runner-types.ts";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -176,7 +177,7 @@ export interface AgentConfig {
 	thinking?: string;
 	systemPrompt: string;
 	/** How Pi incorporates the agent Markdown body. Defaults to append. */
-	systemPromptMode?: "append" | "replace";
+	systemPromptMode?: SystemPromptMode;
 	source: "user" | "project" | "built-in";
 	filePath: string;
 }

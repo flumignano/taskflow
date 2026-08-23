@@ -440,5 +440,6 @@ export async function runClaudeAgentTask(
  * like the pi/codex/opencode runners, so the engine runs unchanged on Claude Code.
  */
 export const claudeSubagentRunner: SubagentRunner<AgentConfig> = {
+	systemPromptModes: ["append"],
 	runTask: runClaudeAgentTask,
 };
