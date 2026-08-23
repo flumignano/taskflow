@@ -64,6 +64,7 @@ const SIDECAR_PHASE_FIELDS = [
 	"model",
 	"thinking",
 	"tools",
+	"skills",
 	"cwd",
 	"final",
 	"optional",

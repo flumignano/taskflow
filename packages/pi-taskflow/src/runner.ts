@@ -9,7 +9,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { resolveProjectPiSkills } from "./skills.ts";
 import {
+	agentToolExpansionError,
+	emptyUsage,
 	newAccumulator,
 	foldEventLine,
 	runSubagentProcess,
@@ -382,6 +385,19 @@ export async function runAgentTask(
 ): Promise<RunResult> {
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) return unknownAgentResult(agentName, task, agents);
+	const toolError = agentToolExpansionError(agent, opts.tools);
+	if (toolError) {
+		return {
+			agent: agentName,
+			task,
+			exitCode: 1,
+			output: "",
+			stderr: toolError,
+			usage: emptyUsage(),
+			stopReason: "error",
+			errorMessage: toolError,
+		};
+	}
 	const piChild = normalizePiChildSettings(piChildRaw);
 	let configuredExtensions: string[];
 	try {
@@ -410,7 +426,14 @@ export async function runAgentTask(
 	if (piChild.resourceProfile !== "inherit") args.push("--no-extensions");
 	if (model) args.push("--model", model);
 	if (thinking) args.push("--thinking", thinking);
-	if (tools && tools.length > 0) args.push("--tools", tools.join(","));
+	if (tools !== undefined) {
+		if (tools.length > 0) args.push("--tools", tools.join(","));
+		else args.push("--no-tools");
+	}
+	if (opts.skills !== undefined) {
+		args.push("--no-skills");
+		for (const skill of opts.skills) args.push("--skill", skill.filePath);
+	}
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
@@ -419,23 +442,23 @@ export async function runAgentTask(
 
 	try {
 		const ctxEnabled = Boolean(opts.ctxDir && opts.nodeId);
-		// Build the appended system prompt = the agent's own prompt PLUS, when the
-		// Shared Context Tree is enabled for this phase, a guidance block that tells
-		// the subagent the ctx_* tools exist and the discipline for using them.
-		// Without this the model only sees terse tool descriptions and rarely uses
-		// them proactively (capability != usage).
-		const appendedPrompt = [agent.systemPrompt.trim(), ctxEnabled ? CTX_TOOLS_GUIDANCE : ""]
+		// Build the agent prompt = the agent's own prompt PLUS, when the Shared
+		// Context Tree is enabled, its short usage guidance. systemPromptMode only
+		// chooses Pi's append-vs-replace mechanism; it does not disable context
+		// files, extensions, skills, or any other ordinary Pi resource.
+		const agentPrompt = [agent.systemPrompt.trim(), ctxEnabled ? CTX_TOOLS_GUIDANCE : ""]
 			.filter(Boolean)
 			.join("\n\n");
-		if (appendedPrompt) {
+		if (agentPrompt) {
 			// Allocate the temp dir + path BEFORE any fallible I/O so that if
 			// writeFile throws, tmpPromptDir/tmpPromptPath are already set and
 			// the finally block can clean up the directory (F-004).
 			tmpPromptDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-taskflow-"));
 			const safeName = agent.name.replace(/[^\w.-]+/g, "_");
-			tmpPromptPath = path.join(tmpPromptDir, `prompt-${safeName}.md`);
-			await writePromptToTempFile(tmpPromptPath, appendedPrompt);
-			args.push("--append-system-prompt", tmpPromptPath);
+			const promptPath = path.join(tmpPromptDir, `prompt-${safeName}.md`);
+			tmpPromptPath = promptPath;
+			await writePromptToTempFile(promptPath, agentPrompt);
+			args.push(agent.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptPath);
 		}
 		// Shared Context Tree opt-in: load THIS extension into the subagent so it
 		// can register the ctx_* tools, and pass the blackboard dir + node id via
@@ -510,6 +533,7 @@ export async function runAgentTask(
  */
 export const piSubagentRunner: SubagentRunner<AgentConfig> = {
 	runTask: runAgentTask,
+	resolveSkills: resolveProjectPiSkills,
 };
 
 /** Create a host-authorized Pi runner. The normalized configuration is copied
@@ -521,6 +545,7 @@ export function createPiSubagentRunner(raw: unknown = DEFAULT_PI_CHILD_SETTINGS)
 		extensions: [...normalized.extensions],
 	};
 	return {
+		resolveSkills: resolveProjectPiSkills,
 		runTask: (cwd, agents, agentName, task, opts, globalThinking) =>
 			runAgentTask(cwd, agents, agentName, task, opts, globalThinking, snapshot),
 	};

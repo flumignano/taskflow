@@ -37,6 +37,7 @@ function writeAgent(
 		"legacy-model-role"?: string;
 		thinking?: string;
 		tools?: string;
+		systemPromptMode?: string;
 	},
 	body = "",
 ): string {
@@ -162,6 +163,34 @@ test("discoverAgents: discovers user agents from <agentDir>/agents/", () => {
 	assert.equal(agents[0].systemPrompt, "You are scout.");
 	assert.equal(agents[0].source, "user");
 	assert.equal(projectAgentsDir, null);
+});
+
+test("discoverAgents: systemPromptMode defaults to append", () => {
+	const agentsDir = path.join(userAgentDir, "agents");
+	writeAgent(agentsDir, "legacy.md", { name: "legacy", description: "legacy agent" }, "Legacy prompt.");
+
+	const { agents } = discoverAgents(projectCwd, "user");
+	assert.equal(agents[0].systemPromptMode, "append");
+});
+
+test("discoverAgents: accepts explicit append and replace systemPromptMode", () => {
+	const agentsDir = path.join(userAgentDir, "agents");
+	writeAgent(agentsDir, "append.md", { name: "append", description: "append agent", systemPromptMode: "append" }, "Append prompt.");
+	writeAgent(agentsDir, "replace.md", { name: "replace", description: "replace agent", systemPromptMode: "replace" }, "Replace prompt.");
+
+	const { agents } = discoverAgents(projectCwd, "user");
+	assert.equal(agents.find((agent) => agent.name === "append")?.systemPromptMode, "append");
+	assert.equal(agents.find((agent) => agent.name === "replace")?.systemPromptMode, "replace");
+});
+
+test("discoverAgents: rejects an invalid systemPromptMode instead of falling back", () => {
+	const agentsDir = path.join(userAgentDir, "agents");
+	writeAgent(agentsDir, "invalid.md", { name: "invalid", description: "invalid agent", systemPromptMode: "overwrite" }, "Prompt.");
+
+	assert.throws(
+		() => discoverAgents(projectCwd, "user"),
+		/systemPromptMode.*append.*replace/i,
+	);
 });
 
 test("discoverAgents: discovers project agents from <cwd>/.pi/agents/", () => {

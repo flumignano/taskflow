@@ -56,6 +56,9 @@ export function kernelUnsupportedReason(def: Taskflow): string | undefined {
 	}
 	for (const p of def.phases ?? []) {
 		const id = p.id;
+		if ((p as { skills?: unknown }).skills !== undefined) {
+			return `phase '${id}': explicit Pi skill selection requires the imperative host-resolution seam`;
+		}
 		if (Array.isArray((p as { effects?: unknown }).effects) &&
 			((p as { effects?: unknown[] }).effects?.length ?? 0) > 0) {
 			return `phase '${id}': declared effects require the resource-controlled imperative transaction seam`;

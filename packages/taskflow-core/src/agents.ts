@@ -175,9 +175,25 @@ export interface AgentConfig {
 	legacyModelRole?: string;
 	thinking?: string;
 	systemPrompt: string;
+	/** How Pi incorporates the agent Markdown body. Defaults to append. */
+	systemPromptMode?: "append" | "replace";
 	source: "user" | "project" | "built-in";
 	filePath: string;
 }
+
+/** Return a fail-closed diagnostic when phase.tools exceeds an agent envelope. */
+export function agentToolExpansionError(
+	agent: AgentConfig,
+	requested: readonly string[] | undefined,
+): string | undefined {
+	if (requested === undefined || agent.tools === undefined) return undefined;
+	const allowed = new Set(agent.tools);
+	const unauthorized = [...new Set(requested.filter((tool) => !allowed.has(tool)))];
+	if (unauthorized.length === 0) return undefined;
+	return `Agent '${agent.name}' tool ceiling forbids phase.tools expansion; unauthorized tool(s): ${unauthorized.join(", ")}. Declared tools: ${agent.tools.join(", ") || "<none>"}`;
+}
+
+class AgentConfigurationError extends Error {}
 
 /** @internal */
 export interface AgentDiscoveryResult {
@@ -233,6 +249,13 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "built-in")
 				tools = undefined;
 			}
 
+			const rawPromptMode = frontmatter.systemPromptMode;
+			if (rawPromptMode !== undefined && rawPromptMode !== "append" && rawPromptMode !== "replace") {
+				throw new AgentConfigurationError(
+					`Agent '${String(frontmatter.name)}': invalid systemPromptMode '${String(rawPromptMode)}' (expected append or replace)`,
+				);
+			}
+
 			agents.push({
 				name: String(frontmatter.name),
 				description: String(frontmatter.description),
@@ -243,10 +266,12 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "built-in")
 					: { legacyModelRole: String(frontmatter["legacy-model-role"]) }),
 				thinking: frontmatter.thinking === undefined ? undefined : String(frontmatter.thinking),
 				systemPrompt: body,
+				systemPromptMode: rawPromptMode ?? "append",
 				source,
 				filePath,
 			});
-		} catch {
+		} catch (error) {
+			if (error instanceof AgentConfigurationError) throw error;
 			// Defense-in-depth: a single bad agent file must not break discovery
 			// for the entire flow (e.g. exotic YAML shapes, runtime errors in
 			// field access, symlink races, etc.).

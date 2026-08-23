@@ -87,6 +87,7 @@ export const THINKING_LEVELS = ["off", "none", "minimal", "low", "medium", "high
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 const CACHE_SCOPES = ["run-only", "cross-run", "off"] as const;
 export type CacheScope = (typeof CACHE_SCOPES)[number];
+const PI_SKILL_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 /** Allowed fingerprint entry prefixes. `glob!:` = content-hash variant of `glob:`. */
 const CACHE_FINGERPRINT_PREFIXES = ["git:", "glob:", "glob!:", "file:", "env:"] as const;
 /** Phase types that must NOT be cached across runs (a fresh result is required each run). */
@@ -376,6 +377,15 @@ const PhaseSchema = Type.Object(
 			}),
 		),
 		tools: Type.Optional(Type.Array(Type.String(), { description: "Restrict tools for this phase's agent" })),
+		skills: Type.Optional(
+			Type.Array(
+				Type.String({ pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" }),
+				{
+					uniqueItems: true,
+					description: "[Pi] Exact project skill names for this agent-running phase. Omit for ambient discovery; [] disables ambient skills.",
+				},
+			),
+		),
 		cwd: Type.Optional(Type.String({ description: "Working directory for this phase. Accepts a literal path; a reserved keyword ('temp', 'dedicated', 'worktree'); or the exact whole placeholder {args.X} when X is declared type:'relative-path'. The 0.2.1 argument bridge requires an explicit host resolve-only opt-in." })),
 		final: Type.Optional(Type.Boolean({ description: "Mark this phase's output as the workflow result" })),
 		optional: Type.Optional(
@@ -1120,7 +1130,7 @@ export function validateTaskflow(def: unknown, opts: ValidationOptions = {}): Va
 		// verify/compile/collectRefs downstream) iterate these; a non-array is
 		// reported as a structured error here. The iteration sites use asArray() so
 		// a bad value degrades to [] instead of throwing "not iterable".
-		for (const key of ["dependsOn", "from", "branches", "eval", "context", "tools"] as const) {
+		for (const key of ["dependsOn", "from", "branches", "eval", "context", "tools", "skills"] as const) {
 			const v = (p as Record<string, unknown>)[key];
 			if (v !== undefined && !Array.isArray(v)) {
 				errors.push(`Phase '${p.id}': '${key}' must be an array, got ${typeof v}`);
@@ -1255,6 +1265,26 @@ export function validateTaskflow(def: unknown, opts: ValidationOptions = {}): Va
 
 		const type = (p.type ?? "agent") as PhaseType;
 		if (!PHASE_TYPES.includes(type)) errors.push(`Phase '${p.id}': unknown type '${type}'`);
+		const selectedSkills = (p as { skills?: unknown }).skills;
+		if (selectedSkills !== undefined) {
+			if (!(AGENT_RUNNING_PHASE_TYPES as readonly string[]).includes(type)) {
+				errors.push(`Phase '${p.id}' (${type}): 'skills' is only valid for agent-running phases (${AGENT_RUNNING_PHASE_TYPES.join("/")})`);
+			}
+			if (Array.isArray(selectedSkills)) {
+				const seenSkills = new Set<string>();
+				for (const value of selectedSkills) {
+					if (typeof value !== "string" || !PI_SKILL_NAME_RE.test(value) || value.includes("--")) {
+						errors.push(`Phase '${p.id}': invalid skill name '${String(value)}' (expected 1-64 lowercase letters, numbers, or single hyphens)`);
+						continue;
+					}
+					if (seenSkills.has(value)) errors.push(`Phase '${p.id}': duplicate skill name '${value}'`);
+					seenSkills.add(value);
+				}
+				if (selectedSkills.length > 0 && asArray(p.branches).some((branch) => typeof (branch as { cwd?: unknown }).cwd === "string")) {
+					errors.push(`Phase '${p.id}': 'skills' cannot be combined with per-branch cwd; select a phase-level cwd so skill resolution has one deterministic project boundary`);
+				}
+			}
+		}
 
 		// Per-type requirements
 		if (type === "agent") {

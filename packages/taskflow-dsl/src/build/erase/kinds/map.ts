@@ -83,7 +83,7 @@ export function emitMap(
 					ctx.phases,
 				);
 				const perItemKeys = new Set([
-					"agent", "model", "thinking", "tools", "cwd", "output", "expect", "retry", "timeout",
+					"agent", "model", "thinking", "tools", "skills", "cwd", "output", "expect", "retry", "timeout",
 					"optional", "idempotent", "context", "contextLimit", "cache", "shareContext",
 				]);
 				for (const [key, value] of Object.entries(iopts)) {

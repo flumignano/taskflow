@@ -248,7 +248,7 @@ function decompilePhase(p: Phase, bind: string, _byId: Map<string, Phase>, bindi
 	if (bind !== p.id) opts.push(`id: ${sourceLiteral(p.id)}`);
 	const raw = p as unknown as Record<string, unknown>;
 	for (const key of [
-		"agent", "model", "thinking", "tools", "cwd", "output", "expect", "when", "join", "dependsOn",
+		"agent", "model", "thinking", "tools", "skills", "cwd", "output", "expect", "when", "join", "dependsOn",
 		"retry", "timeout", "optional", "idempotent", "final", "concurrency", "context", "contextLimit",
 		"onBlock", "eval", "score", "cache", "shareContext", "convergence", "reflexion",
 	] as const) {
