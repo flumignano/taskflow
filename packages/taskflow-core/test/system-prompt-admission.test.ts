@@ -58,13 +58,33 @@ function deps(
 				agent: agentName,
 				task,
 				exitCode: 0,
-				output: task === "legacy" ? "legacy-append-output" : `out:${task}`,
+				output: task.includes("## Target under evaluation")
+					? '{"score":1,"verdict":"pass","reason":"test judge pass"}'
+					: task === "legacy" ? "legacy-append-output" : `out:${task}`,
 				stderr: "",
 				usage: emptyUsage(),
 				stopReason: "end",
 			};
 		},
 		...extra,
+	};
+}
+
+function scoringGate(
+	id: string,
+	judgeAgent: string | undefined,
+	phaseAgent = "append-worker",
+): Taskflow["phases"][number] {
+	return {
+		id,
+		type: "gate",
+		agent: phaseAgent,
+		score: {
+			target: "payload",
+			scorers: [{ type: "contains", value: "not-present" }],
+			judge: { ...(judgeAgent === undefined ? {} : { agent: judgeAgent }), task: "judge payload" },
+		},
+		final: true,
 	};
 }
 
@@ -348,6 +368,360 @@ test("event-kernel nested execution preserves unsupported replace admission", as
 			[result.finalOutput, ...Object.values(result.state.phases).map((phase) => phase.error ?? "")].join("\n"),
 			/systemPromptMode.*replace.*active host/i,
 		);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+
+test("unsupported replacement scoring judge fails before cross-run cache trust", async () => {
+	const cwd = tempDir();
+	try {
+		const calls: string[] = [];
+		const cacheStore = new CacheStore(cwd);
+		const def: Taskflow = {
+			name: "replace-score-cache",
+			phases: [
+				{ id: "seed", agent: "append-worker", task: "legacy", cache: { scope: "cross-run" } },
+				{ ...scoringGate("quality", "replace-judge"), dependsOn: ["seed"] },
+			],
+		};
+		const agents = [agent("append-worker", "append"), agent("replace-judge", "replace")];
+		const shared = { cacheStore };
+		const primed = await executeTaskflow(
+			state(def, cwd, "replace-score-cache-prime"),
+			deps(cwd, agents, calls, ["append", "replace"], shared),
+		);
+		assert.equal(primed.ok, true);
+		assert.equal(calls.length, 2);
+
+		const rejected = await executeTaskflow(
+			state(def, cwd, "replace-score-cache-reject"),
+			deps(cwd, agents, calls, ["append"], shared),
+		);
+		assert.equal(rejected.ok, false);
+		assert.equal(calls.length, 2, "admission must reject before cache lookup or judge spawn");
+		assert.equal(rejected.state.phases.seed, undefined);
+		assert.equal(rejected.state.phases.quality?.status, "failed");
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("unsupported replacement scoring judge fails before ordinary resume trust", async () => {
+	const cwd = tempDir();
+	try {
+		const calls: string[] = [];
+		const agents = [agent("append-worker", "append"), agent("replace-judge", "replace")];
+		const def: Taskflow = { name: "replace-score-resume", phases: [scoringGate("quality", "replace-judge")] };
+		const parent = await executeTaskflow(
+			state(def, cwd, "replace-score-resume-parent"),
+			deps(cwd, agents, calls, ["append", "replace"]),
+		);
+		assert.equal(parent.ok, true);
+		parent.state.status = "paused";
+		const parentSnapshot = structuredClone(parent.state);
+
+		const rejected = await executeTaskflow(
+			forkRunForResume(parent.state, { cwd }),
+			deps(cwd, agents, calls, ["append"]),
+		);
+		assert.equal(rejected.ok, false);
+		assert.equal(calls.length, 1, "admission must reject without respawning or accepting run-only state");
+		assert.notEqual(rejected.state.phases.quality?.cacheHit, "run-only");
+		assert.deepEqual(parent.state, parentSnapshot);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("unsupported replacement scoring judge fails recompute admission", async () => {
+	const cwd = tempDir();
+	try {
+		const calls: string[] = [];
+		const agents = [agent("append-worker", "append"), agent("replace-judge", "replace")];
+		const def: Taskflow = { name: "replace-score-recompute", phases: [scoringGate("quality", "replace-judge")] };
+		const parent = await executeTaskflow(
+			state(def, cwd, "replace-score-recompute-parent"),
+			deps(cwd, agents, calls, ["append", "replace"]),
+		);
+		assert.equal(parent.ok, true);
+		const parentSnapshot = structuredClone(parent.state);
+
+		await assert.rejects(
+			recomputeTaskflow(
+				parent.state,
+				deps(cwd, agents, calls, ["append"]),
+				["quality"],
+				{ dryRun: false },
+			),
+			/host capability admission.*systemPromptMode.*replace/i,
+		);
+		assert.equal(calls.length, 1, "recompute must reject before reuse or execution");
+		assert.deepEqual(parent.state, parentSnapshot);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("nested parent cache cannot hide an unsupported replacement scoring judge", async () => {
+	const cwd = tempDir();
+	try {
+		const calls: string[] = [];
+		const cacheStore = new CacheStore(cwd);
+		const child: Taskflow = { name: "replace-score-child", phases: [scoringGate("quality", "replace-judge")] };
+		const parent: Taskflow = {
+			name: "replace-score-parent",
+			phases: [{ id: "nested", type: "flow", use: child.name, cache: { scope: "cross-run" }, final: true }],
+		};
+		const agents = [agent("append-worker", "append"), agent("replace-judge", "replace")];
+		const shared = {
+			cacheStore,
+			loadFlow: (name: string) => name === child.name ? child : undefined,
+		};
+		const primed = await executeTaskflow(
+			state(parent, cwd, "replace-score-parent-prime"),
+			deps(cwd, agents, calls, ["append", "replace"], shared),
+		);
+		assert.equal(primed.ok, true);
+		assert.equal(calls.length, 1);
+
+		const rejected = await executeTaskflow(
+			state(parent, cwd, "replace-score-parent-reject"),
+			deps(cwd, agents, calls, ["append"], shared),
+		);
+		assert.equal(rejected.ok, false);
+		assert.equal(calls.length, 1);
+		assert.equal(rejected.state.phases.nested?.status, "failed");
+		assert.notEqual(rejected.state.phases.nested?.cacheHit, "cross-run");
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("Pi-supported replacement scoring judge remains admissible", async () => {
+	const cwd = tempDir();
+	try {
+		const calls: string[] = [];
+		const agents = [agent("append-worker", "append"), agent("replace-judge", "replace")];
+		const def: Taskflow = { name: "pi-replace-score", phases: [scoringGate("quality", "replace-judge")] };
+		const result = await executeTaskflow(
+			state(def, cwd, "pi-replace-score"),
+			deps(cwd, agents, calls, ["append", "replace"]),
+		);
+		assert.equal(result.ok, true);
+		assert.equal(calls.length, 1);
+		assert.equal(result.state.phases.quality?.gate?.verdict, "pass");
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("append and default scoring judges remain admissible on append-only hosts", async () => {
+	const cwd = tempDir();
+	try {
+		const calls: string[] = [];
+		const agents = [agent("default-judge"), agent("append-judge", "append")];
+		const def: Taskflow = {
+			name: "append-default-score",
+			phases: [
+				{ ...scoringGate("append-quality", "append-judge", "default-judge"), final: false },
+				{ ...scoringGate("default-quality", undefined, "default-judge"), dependsOn: ["append-quality"] },
+			],
+		};
+		const result = await executeTaskflow(
+			state(def, cwd, "append-default-score"),
+			deps(cwd, agents, calls, ["append"]),
+		);
+		assert.equal(result.ok, true);
+		assert.equal(calls.length, 2);
+		assert.equal(result.state.phases["default-quality"]?.gate?.verdict, "pass");
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("nested statically false with argument excludes a replacement phase from admission", async () => {
+	const cwd = tempDir();
+	try {
+		const calls: string[] = [];
+		const child: Taskflow = {
+			name: "guarded-replace-child",
+			args: { enabled: { type: "boolean", required: true } },
+			phases: [{ id: "replace-work", agent: "replace-worker", task: "replace", when: "{args.enabled}", final: true }],
+		};
+		const parent: Taskflow = {
+			name: "guarded-replace-parent",
+			phases: [{ id: "nested", type: "flow", use: child.name, with: { enabled: false }, final: true }],
+		};
+		const result = await executeTaskflow(
+			state(parent, cwd, "guarded-replace-false"),
+			deps(cwd, [agent("replace-worker", "replace")], calls, ["append"], {
+				loadFlow: (name: string) => name === child.name ? child : undefined,
+			}),
+		);
+		assert.equal(result.ok, true);
+		assert.equal(calls.length, 0);
+		assert.equal(result.state.phases.nested?.status, "done");
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("child defaults participate in nested static admission", async () => {
+	const cwd = tempDir();
+	try {
+		const calls: string[] = [];
+		const child: Taskflow = {
+			name: "default-disabled-replace-child",
+			args: { enabled: { type: "boolean", default: false } },
+			phases: [{ id: "replace-work", agent: "replace-worker", task: "replace", when: "{args.enabled}", final: true }],
+		};
+		const parent: Taskflow = {
+			name: "default-disabled-replace-parent",
+			phases: [{ id: "nested", type: "flow", use: child.name, final: true }],
+		};
+		const result = await executeTaskflow(
+			state(parent, cwd, "guarded-replace-default-false"),
+			deps(cwd, [agent("replace-worker", "replace")], calls, ["append"], {
+				loadFlow: (name: string) => name === child.name ? child : undefined,
+			}),
+		);
+		assert.equal(result.ok, true);
+		assert.equal(calls.length, 0);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("nested statically true replacement phase is rejected on append-only hosts", async () => {
+	const cwd = tempDir();
+	try {
+		const calls: string[] = [];
+		const child: Taskflow = {
+			name: "enabled-replace-child",
+			args: { enabled: { type: "boolean", required: true } },
+			phases: [{ id: "replace-work", agent: "replace-worker", task: "replace", when: "{args.enabled}", final: true }],
+		};
+		const parent: Taskflow = {
+			name: "enabled-replace-parent",
+			phases: [{ id: "nested", type: "flow", use: child.name, with: { enabled: true }, final: true }],
+		};
+		const result = await executeTaskflow(
+			state(parent, cwd, "guarded-replace-true"),
+			deps(cwd, [agent("replace-worker", "replace")], calls, ["append"], {
+				loadFlow: (name: string) => name === child.name ? child : undefined,
+			}),
+		);
+		assert.equal(result.ok, false);
+		assert.equal(calls.length, 0);
+		assert.match(result.finalOutput, /systemPromptMode.*replace.*active host/i);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("nested dynamically unresolved replacement guard remains conservative", async () => {
+	const cwd = tempDir();
+	try {
+		const calls: string[] = [];
+		const child: Taskflow = {
+			name: "dynamic-replace-child",
+			args: { enabled: { type: "boolean", required: true } },
+			phases: [{ id: "replace-work", agent: "replace-worker", task: "replace", when: "{args.enabled}", final: true }],
+		};
+		const parent: Taskflow = {
+			name: "dynamic-replace-parent",
+			phases: [
+				{ id: "decide", agent: "append-worker", task: "decide", output: "json" },
+				{
+					id: "nested",
+					type: "flow",
+					use: child.name,
+					with: { enabled: "{steps.decide.json.enabled}" },
+					dependsOn: ["decide"],
+					final: true,
+				},
+			],
+		};
+		const result = await executeTaskflow(
+			state(parent, cwd, "guarded-replace-dynamic"),
+			deps(cwd, [agent("append-worker", "append"), agent("replace-worker", "replace")], calls, ["append"], {
+				loadFlow: (name: string) => name === child.name ? child : undefined,
+			}),
+		);
+		assert.equal(result.ok, false);
+		assert.equal(calls.length, 0, "conservative root admission must reject before the dynamic producer runs");
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("statically disabled ordinary replacement phase remains ignored", async () => {
+	const cwd = tempDir();
+	try {
+		const calls: string[] = [];
+		const def: Taskflow = {
+			name: "ordinary-disabled-replace",
+			args: { enabled: { type: "boolean", default: false } },
+			phases: [{ id: "replace-work", agent: "replace-worker", task: "replace", when: "{args.enabled}", final: true }],
+		};
+		const result = await executeTaskflow(
+			state(def, cwd, "ordinary-disabled-replace"),
+			deps(cwd, [agent("replace-worker", "replace")], calls, ["append"]),
+		);
+		assert.equal(result.ok, true);
+		assert.equal(calls.length, 0);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("separate invocations of one nested flow are admitted with their own static arguments", async () => {
+	const cwd = tempDir();
+	try {
+		const calls: string[] = [];
+		const cacheStore = new CacheStore(cwd);
+		const child: Taskflow = {
+			name: "multi-invocation-replace-child",
+			args: { enabled: { type: "boolean", required: true } },
+			phases: [{ id: "replace-work", agent: "replace-worker", task: "replace", when: "{args.enabled}", final: true }],
+		};
+		const parent: Taskflow = {
+			name: "multi-invocation-replace-parent",
+			phases: [
+				{ id: "disabled", type: "flow", use: child.name, with: { enabled: false } },
+				{
+					id: "enabled",
+					type: "flow",
+					use: child.name,
+					with: { enabled: true },
+					dependsOn: ["disabled"],
+					cache: { scope: "cross-run" },
+					final: true,
+				},
+			],
+		};
+		const shared = {
+			cacheStore,
+			loadFlow: (name: string) => name === child.name ? child : undefined,
+		};
+		const agents = [agent("replace-worker", "replace")];
+		const primed = await executeTaskflow(
+			state(parent, cwd, "multi-invocation-prime"),
+			deps(cwd, agents, calls, ["append", "replace"], shared),
+		);
+		assert.equal(primed.ok, true);
+		assert.equal(calls.length, 1);
+
+		const rejected = await executeTaskflow(
+			state(parent, cwd, "multi-invocation-reject"),
+			deps(cwd, agents, calls, ["append"], shared),
+		);
+		assert.equal(rejected.ok, false);
+		assert.equal(calls.length, 1);
+		assert.equal(rejected.state.phases.enabled?.status, "failed");
+		assert.notEqual(rejected.state.phases.enabled?.cacheHit, "cross-run");
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}

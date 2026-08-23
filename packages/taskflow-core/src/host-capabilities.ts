@@ -1,7 +1,8 @@
 import type { AgentConfig } from "./agents.ts";
-import { AGENT_RUNNING_PHASE_TYPES, type Phase, type Taskflow } from "./schema.ts";
-import type { SystemPromptMode } from "./host/runner-types.ts";
+import { interpolateValue } from "./interpolate.ts";
 import { classifyWhen } from "./preflight.ts";
+import { AGENT_RUNNING_PHASE_TYPES, resolveArgs, type Phase, type Taskflow } from "./schema.ts";
+import type { SystemPromptMode } from "./host/runner-types.ts";
 
 /** A host/agent incompatibility found before any executable or reusable result is trusted. */
 export interface SystemPromptModeAdmissionFailure {
@@ -14,7 +15,7 @@ export interface SystemPromptModeAdmissionFailure {
 	error: string;
 }
 
-/** Agent references authored by one phase, including branch and tournament judge overrides. */
+/** Agent references authored by one phase, including branch and judge overrides. */
 function phaseAgentReferences(phase: Phase): Array<string | undefined> {
 	const type = phase.type ?? "agent";
 	const authored: Array<string | undefined> = [];
@@ -24,6 +25,11 @@ function phaseAgentReferences(phase: Phase): Array<string | undefined> {
 		authored.push(phase.agent);
 	}
 	if (type === "tournament") authored.push(phase.judgeAgent ?? phase.agent);
+	const scoreJudge =
+		type === "gate" && phase.score && typeof phase.score === "object"
+			? (phase.score as { judge?: { agent?: string } }).judge
+			: undefined;
+	if (scoreJudge && typeof scoreJudge === "object") authored.push(scoreJudge.agent ?? phase.agent);
 	return authored;
 }
 
@@ -60,6 +66,21 @@ function inlineTaskflow(raw: unknown, phaseId: string): Taskflow | undefined {
 	};
 }
 
+/** Resolve only invocation state available before execution. Unresolved step or
+ * previous-output placeholders remain intact and therefore classify conservatively. */
+function resolveStaticNestedArgs(
+	def: Taskflow,
+	phase: Phase,
+	args: Record<string, unknown>,
+): Record<string, unknown> {
+	const provided: Record<string, unknown> = {};
+	const context = { args, steps: {} };
+	for (const [key, value] of Object.entries(phase.with ?? {})) {
+		provided[key] = interpolateValue(value, context);
+	}
+	return resolveArgs(def, provided);
+}
+
 /**
  * Validate the system-prompt modes requested by agents referenced from the
  * executable flow closure. Unused discovered profiles are deliberately ignored.
@@ -78,8 +99,8 @@ export function systemPromptModeAdmissionFailure(
 	} = {},
 ): SystemPromptModeAdmissionFailure | undefined {
 	const replaceSupported = systemPromptModes?.includes("replace") === true;
-	const seenDefinitions = new Set<object>();
-	const seenSavedFlows = new Set<string>();
+	const activeDefinitions = new Set<object>();
+	const activeSavedFlows = new Set<string>();
 
 	const visit = (
 		current: Pick<Taskflow, "name" | "phases">,
@@ -87,56 +108,69 @@ export function systemPromptModeAdmissionFailure(
 		rootPhaseId: string | undefined,
 		args: Record<string, unknown>,
 	): SystemPromptModeAdmissionFailure | undefined => {
-		if (typeof current === "object" && current !== null) {
-			if (seenDefinitions.has(current)) return undefined;
-			seenDefinitions.add(current);
-		}
-		for (const phase of current.phases) {
-			if (classifyWhen(phase.when, args) === "static-false") continue;
-			const type = phase.type ?? "agent";
-			const root = rootPhaseId ?? phase.id;
-			const phasePath = [...path, phase.id];
-			if ((AGENT_RUNNING_PHASE_TYPES as readonly string[]).includes(type)) {
-				const resolved = new Map<string, AgentConfig>();
-				for (const reference of phaseAgentReferences(phase)) {
-					const configured = resolveConfiguredAgent(reference, agents);
-					if (configured) resolved.set(configured.name, configured);
+		const currentDefinition = current as object;
+		if (activeDefinitions.has(currentDefinition)) return undefined;
+		activeDefinitions.add(currentDefinition);
+		try {
+			for (const phase of current.phases) {
+				if (classifyWhen(phase.when, args) === "static-false") continue;
+				const type = phase.type ?? "agent";
+				const root = rootPhaseId ?? phase.id;
+				const phasePath = [...path, phase.id];
+				if ((AGENT_RUNNING_PHASE_TYPES as readonly string[]).includes(type)) {
+					const resolved = new Map<string, AgentConfig>();
+					for (const reference of phaseAgentReferences(phase)) {
+						const configured = resolveConfiguredAgent(reference, agents);
+						if (configured) resolved.set(configured.name, configured);
+					}
+					for (const configured of resolved.values()) {
+						if (configured.systemPromptMode !== "replace" || replaceSupported) continue;
+						const error =
+							`Agent '${configured.name}' referenced by phase '${phasePath.join(" -> ")}' requested ` +
+							"systemPromptMode 'replace', but the active host does not support replacement system prompts.";
+						return {
+							rootPhaseId: root,
+							phaseId: phase.id,
+							agentName: configured.name,
+							mode: "replace",
+							error,
+						};
+					}
 				}
-				for (const configured of resolved.values()) {
-					if (configured.systemPromptMode !== "replace" || replaceSupported) continue;
-					const error =
-						`Agent '${configured.name}' referenced by phase '${phasePath.join(" -> ")}' requested ` +
-						"systemPromptMode 'replace', but the active host does not support replacement system prompts.";
-					return {
-						rootPhaseId: root,
-						phaseId: phase.id,
-						agentName: configured.name,
-						mode: "replace",
-						error,
-					};
-				}
-			}
 
-			if (type !== "flow" && type !== "expand") continue;
-			let nested: Taskflow | undefined;
-			if (phase.def !== undefined) {
-				nested = inlineTaskflow(phase.def, phase.id);
-			} else if (type === "flow" && phase.use && opts.loadFlow && !seenSavedFlows.has(phase.use)) {
-				seenSavedFlows.add(phase.use);
+				if (type !== "flow" && type !== "expand") continue;
+				let nested: Taskflow | undefined;
+				let activeSavedFlow: string | undefined;
+				if (phase.def !== undefined) {
+					nested = inlineTaskflow(phase.def, phase.id);
+				} else if (type === "flow" && phase.use && opts.loadFlow && !activeSavedFlows.has(phase.use)) {
+					activeSavedFlow = phase.use;
+					activeSavedFlows.add(activeSavedFlow);
+					try {
+						nested = opts.loadFlow(activeSavedFlow);
+					} catch {
+						// Loader failures are handled by the actual flow execution boundary.
+						// Capability preflight must not make a statically unused/failed load
+						// escape the runtime's fail-soft state closure.
+						nested = undefined;
+					}
+				}
+				if (!nested) {
+					if (activeSavedFlow) activeSavedFlows.delete(activeSavedFlow);
+					continue;
+				}
+				const nestedArgs = resolveStaticNestedArgs(nested, phase, args);
 				try {
-					nested = opts.loadFlow(phase.use);
-				} catch {
-					// Loader failures are handled by the actual flow execution boundary.
-					// Capability preflight must not make a statically unused/failed load
-					// escape the runtime's fail-soft state closure.
-					nested = undefined;
+					const failure = visit(nested, phasePath, root, nestedArgs);
+					if (failure) return failure;
+				} finally {
+					if (activeSavedFlow) activeSavedFlows.delete(activeSavedFlow);
 				}
 			}
-			if (!nested) continue;
-			const failure = visit(nested, phasePath, root, {});
-			if (failure) return failure;
+			return undefined;
+		} finally {
+			activeDefinitions.delete(currentDefinition);
 		}
-		return undefined;
 	};
 
 	return visit(def, [def.name], undefined, opts.args ?? {});
