@@ -15,7 +15,7 @@ The equivalent tool operation uses `action: "run"` with `name` and optional `arg
 
 ## Check and inspect a flow
 
-- `/tf verify` — run zero-token structural checks.
+- `/tf verify <name>` — run zero-token structural checks.
 - `/tf plan <name> [args]` — bind arguments, inspect projected phase order and dynamic bindings, and estimate the static agent-call bound without executing subagents.
 - `/tf compile <name> [lr|td]` — render the flow and its verification report.
 - `/tf ir <name>` — inspect the content-addressed FlowIR representation.

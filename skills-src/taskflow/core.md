@@ -726,6 +726,8 @@ Load only the sidecar that answers the next concrete question.
 | `configuration.md` | You need exact fields, precedence, agent/model settings, scopes, tools, skills, context, timeout, retry, budget, caching, or host-specific configuration. |
 | `advanced.md` | You need exact mechanics for loops, races, tournaments, dynamic/generated flows, resume, replay, recompute, caching, background execution, isolation, or other specialized runtime features. |
 | `library.md` | You want to find, save, adapt, generalize, tag, or reuse flows instead of authoring one from scratch. Reuse only when the existing control structure actually fits the task. |
+<!-- host:pi -->
 | `commands.md` | You need user-facing Taskflow commands or want to explain interactive Taskflow operation to a human. |
+<!-- /host:pi -->
 
 Load sidecars progressively: start here, then load the one that answers the next concrete decision.

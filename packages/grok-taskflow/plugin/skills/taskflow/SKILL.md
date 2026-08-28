@@ -1,6 +1,6 @@
 ---
 name: taskflow
-description: Orchestrate multi-phase subagent workflows with Taskflow. Use whenever a request spans a whole project or many items — deeply exploring / 探索 / auditing / 审计 / analyzing a codebase, reviewing or migrating many files or modules in parallel, cross-checked/adversarial review, codebase-wide research, or any repeatable orchestration you want to save and rerun. Prefer this over ad-hoc parallel work when the task has multiple phases (discover → work → review → report) or dynamic fan-out over a discovered list. Drives the taskflow_* MCP tools.
+description: Use Taskflow to delegate or orchestrate bounded work with isolated subagents: use cheaper or specialized agents, preserve your context, apply specialized skills or narrower tools, run independent work in parallel, coordinate dependent steps, review or verify results, process many discovered items, and keep long-running work tracked, resumable, or reusable. Common uses include research, engineering, software development, audits, migrations, data or document analysis, and repeatable workflows. Drives the taskflow_* MCP tools.
 ---
 
 <!-- GENERATED FILE — do not edit. Source: skills-src/taskflow/entry.grok.md + core.md (npm run build:skills) -->
@@ -740,6 +740,5 @@ Load only the sidecar that answers the next concrete question.
 | `configuration.md` | You need exact fields, precedence, agent/model settings, scopes, tools, skills, context, timeout, retry, budget, caching, or host-specific configuration. |
 | `advanced.md` | You need exact mechanics for loops, races, tournaments, dynamic/generated flows, resume, replay, recompute, caching, background execution, isolation, or other specialized runtime features. |
 | `library.md` | You want to find, save, adapt, generalize, tag, or reuse flows instead of authoring one from scratch. Reuse only when the existing control structure actually fits the task. |
-| `commands.md` | You need user-facing Taskflow commands or want to explain interactive Taskflow operation to a human. |
 
 Load sidecars progressively: start here, then load the one that answers the next concrete decision.

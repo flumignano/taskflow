@@ -82,10 +82,33 @@ test("skills: host-conditional filtering removed the other host's content", asyn
 	// The Pi command sidecar is generated only for Pi and is not part of the main skill.
 	assert.match(piCommands, /\/tf list/);
 	assert.match(piCommands, /\/tf resume/);
+	assert.match(piCommands, /\/tf verify <name>/);
+	assert.doesNotMatch(piCommands, /\/tf verify(?:\s+—|\s*$)/m);
 	assert.doesNotMatch(piSkill, /\/tf(?: |:)/);
 	for (const host of ["codex", "claude", "opencode", "grok", "hermes"]) {
 		const dir = host === "codex" ? "codex-taskflow/plugin" : `${host}-taskflow/plugin`;
 		assert.equal(existsSync(path.join(root, "packages", dir, "skills", "taskflow", "commands.md")), false, `${host} must not receive commands.md`);
+	}
+	const generatedSkills = [
+		["pi", piSkill],
+		["codex", cxSkill],
+		["claude", clSkill],
+		["opencode", ocSkill],
+		["grok", gkSkill],
+		["hermes", hmSkill],
+	] as const;
+	for (const [name, text] of generatedSkills) {
+		if (name === "pi") {
+			assert.match(text, /\| `commands\.md` \|/);
+		} else {
+			assert.doesNotMatch(text, /\| `commands\.md` \|/, `${name} SKILL.md must not reference commands.md`);
+		}
+		const description = text.match(/^description:\s*(.+)$/m)?.[1] ?? "";
+		assert.match(description, /delegate or orchestrate bounded work with isolated subagents/, `${name} activation description must use bounded delegation`);
+		assert.match(description, /cheaper or specialized agents/, `${name} activation description must name a concrete delegation benefit`);
+		assert.doesNotMatch(description, /Orchestrate multi-phase subagent workflows/);
+		assert.doesNotMatch(description, /Use whenever a request spans a whole project or many items/);
+		assert.doesNotMatch(description, /Prefer this over ad-hoc parallel work when the task has multiple phases/);
 	}
 	// The accepted main-skill structure is exactly nine ordered top-level sections.
 	const headings = [...piSkill.matchAll(/^## (\d+\. [^\n]+)/gm)].map((match) => match[1]);
