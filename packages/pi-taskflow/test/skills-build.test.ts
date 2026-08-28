@@ -45,8 +45,9 @@ test("release discovery metadata advertises the complete MCP surface", async () 
 });
 
 test("skills: host-conditional filtering removed the other host's content", async () => {
-	const { readFileSync } = await import("node:fs");
+	const { existsSync, readFileSync } = await import("node:fs");
 	const piSkill = readFileSync(path.join(root, "packages", "pi-taskflow", "skills", "taskflow", "SKILL.md"), "utf8");
+	const piCommands = readFileSync(path.join(root, "packages", "pi-taskflow", "skills", "taskflow", "commands.md"), "utf8");
 	const cxSkill = readFileSync(
 		path.join(root, "packages", "codex-taskflow", "plugin", "skills", "taskflow", "SKILL.md"),
 		"utf8",
@@ -78,14 +79,38 @@ test("skills: host-conditional filtering removed the other host's content", asyn
 	] as const) {
 		assert.ok(!/<!--\s*\/?host:/.test(text), `${name} SKILL.md must not contain host markers`);
 	}
-	// Pi teaches its 20 actions; the MCP hosts must not (they're unreachable via MCP).
-	assert.match(piSkill, /Actions \(all 20\)/);
-	assert.doesNotMatch(cxSkill, /Actions \(all 20\)/);
-	assert.doesNotMatch(clSkill, /Actions \(all 20\)/);
-	assert.doesNotMatch(ocSkill, /Actions \(all 20\)/);
-	assert.doesNotMatch(gkSkill, /Actions \(all 20\)/);
-	assert.doesNotMatch(hmSkill, /Actions \(all 20\)/);
-	assert.doesNotMatch(cxSkill, /action: "recompute"/);
+	// The Pi command sidecar is generated only for Pi and is not part of the main skill.
+	assert.match(piCommands, /\/tf list/);
+	assert.match(piCommands, /\/tf resume/);
+	assert.doesNotMatch(piSkill, /\/tf(?: |:)/);
+	for (const host of ["codex", "claude", "opencode", "grok", "hermes"]) {
+		const dir = host === "codex" ? "codex-taskflow/plugin" : `${host}-taskflow/plugin`;
+		assert.equal(existsSync(path.join(root, "packages", dir, "skills", "taskflow", "commands.md")), false, `${host} must not receive commands.md`);
+	}
+	// The accepted main-skill structure is exactly nine ordered top-level sections.
+	const headings = [...piSkill.matchAll(/^## (\d+\. [^\n]+)/gm)].map((match) => match[1]);
+	assert.deepEqual(headings, [
+		"1. Decide whether Taskflow helps",
+		"2. Choose the smallest useful shape",
+		"3. Quick-start examples",
+		"4. Proven task patterns",
+		"5. Adapt the pattern safely",
+		"6. Preflight → verify → plan → run",
+		"7. When execution fails",
+		"8. Advanced shapes",
+		"9. Need more detail?",
+	]);
+	assert.match(piSkill, /\"name\": \"example-flow\"/);
+	assert.match(piSkill, /\{steps\.produce\.output\}/);
+	assert.match(piSkill, /\"from\": \[\"inspect-a\", \"inspect-b\"\]/);
+	assert.match(piSkill, /\{previous\.output\}/);
+	assert.match(piSkill, /per-call `timeout`/);
+	assert.match(piSkill, /retry\.max: 0.*automatically retry/s);
+	assert.match(piSkill, /user \| project \| both/);
+	assert.match(piSkill, /unbounded.*static call estimate/s);
+	assert.match(piSkill, /strictInterpolation: true/);
+	assert.doesNotMatch(piSkill, /readSeek_|colgrep|hypa_|lens_|context-mode|packages_/);
+	assert.doesNotMatch(piSkill, /Actions \(all 20\)/);
 	// The MCP hosts teach the MCP tools; pi must not.
 	assert.match(cxSkill, /taskflow_verify/);
 	assert.match(clSkill, /taskflow_verify/);
@@ -104,9 +129,12 @@ test("skills: host-conditional filtering removed the other host's content", asyn
 	assert.doesNotMatch(ocSkill, /codex exec|claude -p|grok -p|hermes chat/);
 	assert.doesNotMatch(gkSkill, /codex exec|claude -p|opencode run|hermes chat/);
 	assert.doesNotMatch(hmSkill, /codex exec|claude -p|opencode run|grok -p/);
-	// All hosts share the same core: flow design ladder + common-mistakes section.
+	// All hosts share the accepted nine-section body and its DAG semantics.
 	for (const text of [piSkill, cxSkill, clSkill, ocSkill, gkSkill, hmSkill]) {
-		assert.match(text, /Flow design ladder/);
-		assert.match(text, /Referencing `\{steps\.X\}` without `dependsOn/);
+		assert.match(text, /## 1\. Decide whether Taskflow helps/);
+		assert.match(text, /## 9\. Need more detail\?/);
+		assert.match(text, /Array order is not a dependency/);
+		assert.match(text, /\{steps\.produce\.output\}/);
+		assert.match(text, /\{previous\.output\}/);
 	}
 });
