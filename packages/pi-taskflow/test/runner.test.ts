@@ -6,6 +6,7 @@ import * as path from "node:path";
 import {
 	type EventAccumulator,
 	CTX_TOOLS_GUIDANCE,
+	CTX_TOOL_NAMES,
 	foldEventLine,
 	isFailed,
 	looksLikeHtmlOrJson,
@@ -625,11 +626,18 @@ test("runAgentTask: ctxDir/nodeId opt-in injects env, --extension, and the guida
 		assert.match(on.prompt, /Shared Context Tree/, "guidance appended");
 		assert.match(on.prompt, /ctx_read/, "guidance lists the tools");
 
-		// (1b) An agent with a TOOLS WHITELIST must get the ctx_* tools appended,
-		// else --tools would filter out the registered tools (real e2e bug).
+		// (1b) A bounded agent may use context sharing only when its declared
+		// tool ceiling explicitly permits the complete ctx_* capability set.
 		fs.rmSync(capture, { force: true });
 		const whitelisted: AgentConfig[] = [
-			{ name: "t", description: "t", systemPrompt: "", source: "user", filePath: "", tools: ["read", "grep"] },
+			{
+				name: "t",
+				description: "t",
+				systemPrompt: "",
+				source: "user",
+				filePath: "",
+				tools: ["read", "grep", ...CTX_TOOL_NAMES],
+			},
 		];
 		await runAgentTask(dir, whitelisted, "t", "do work", { ctxDir: dir, nodeId: "node-2" });
 		const wl = JSON.parse(fs.readFileSync(capture, "utf-8"));

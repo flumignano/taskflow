@@ -574,6 +574,7 @@ async function runFlow(
 		cleanupConfig.maxAgeDays = settings.taskflow.maxRunAgeDays;
 		const scope: AgentScope = def.agentScope ?? "user";
 		const { agents } = discoverAgents(ctx.cwd, scope, settings.modelRoles, settings.taskflow);
+		const piRunner = createPiSubagentRunner(settings.taskflow.piChild);
 
 		// Hint: if any agent still has unresolved {{role}} references, suggest configuring modelRoles
 		const unresolvedRoles = agents
@@ -611,7 +612,9 @@ async function runFlow(
 			// runTask is a no-op stub, so every host MUST inject its own — omitting
 			// this (as the pre-refactor code could, when the default was runAgentTask
 			// in the same package) now silently breaks all phase execution.
-			runTask: createPiSubagentRunner(settings.taskflow.piChild).runTask,
+			runTask: piRunner.runTask,
+			systemPromptModes: piRunner.systemPromptModes,
+			resolveSkills: piRunner.resolveSkills,
 			requestApproval,
 			loadSavedFlow: (name: string) => {
 				const saved = getFlow(ctx.cwd, name);
@@ -1286,13 +1289,16 @@ export default function (pi: ExtensionAPI) {
 				const dryRun = params.dryRun !== false;
 				const settings = readSubagentSettings();
 				const { agents } = discoverAgents(ctx.cwd, prev.def.agentScope ?? "user", settings.modelRoles, settings.taskflow);
+				const piRunner = createPiSubagentRunner(settings.taskflow.piChild);
 				const deps: RuntimeDeps = {
 					cwd: ctx.cwd,
 					cwdBridgeMode: cwdBridgeModeFromEnv(),
 					agents,
 					globalThinking: settings.globalThinking,
 					signal,
-					runTask: createPiSubagentRunner(settings.taskflow.piChild).runTask,
+					runTask: piRunner.runTask,
+					systemPromptModes: piRunner.systemPromptModes,
+					resolveSkills: piRunner.resolveSkills,
 					loadSavedFlow: (name: string) => {
 						const saved = getFlow(ctx.cwd, name);
 						return saved ? { def: saved.def, filePath: saved.filePath, sourceDirIdentity: saved.sourceDirIdentity } : undefined;
@@ -2055,12 +2061,15 @@ export default function (pi: ExtensionAPI) {
 				const prev = prevR.value;
 				const settings = readSubagentSettings();
 				const { agents } = discoverAgents(ctx.cwd, prev.def.agentScope ?? "user", settings.modelRoles, settings.taskflow);
+				const piRunner = createPiSubagentRunner(settings.taskflow.piChild);
 				const deps: RuntimeDeps = {
 					cwd: ctx.cwd,
 					cwdBridgeMode: cwdBridgeModeFromEnv(),
 					agents,
 					globalThinking: settings.globalThinking,
-					runTask: createPiSubagentRunner(settings.taskflow.piChild).runTask,
+					runTask: piRunner.runTask,
+					systemPromptModes: piRunner.systemPromptModes,
+					resolveSkills: piRunner.resolveSkills,
 					loadSavedFlow: (name: string) => {
 						const saved = getFlow(ctx.cwd, name);
 						return saved ? { def: saved.def, filePath: saved.filePath, sourceDirIdentity: saved.sourceDirIdentity } : undefined;

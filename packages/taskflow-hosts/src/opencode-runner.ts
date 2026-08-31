@@ -50,6 +50,7 @@ import {
 } from "taskflow-core";
 import { emptyUsage } from "taskflow-core";
 import { filteredChildEnv } from "./child-env.ts";
+import { unsupportedSystemPromptModeResult } from "./system-prompt-mode.ts";
 
 /** The permission policy injected (via OPENCODE_CONFIG_CONTENT) for a read-only
  *  phase: deny every mutating capability so a listed-tools phase without
@@ -298,6 +299,8 @@ export async function runOpencodeAgentTask(
 ): Promise<RunResult> {
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) return unknownAgentResult(agentName, task, agents);
+	const promptModeError = unsupportedSystemPromptModeResult(agent, task, "OpenCode");
+	if (promptModeError) return promptModeError;
 
 	const model = opts.model ?? agent.model;
 	const thinking = opts.thinking ?? agent.thinking ?? globalThinking;
@@ -357,5 +360,6 @@ export async function runOpencodeAgentTask(
  * like the pi/codex/claude runners, so the engine runs unchanged on OpenCode.
  */
 export const opencodeSubagentRunner: SubagentRunner<AgentConfig> = {
+	systemPromptModes: ["append"],
 	runTask: runOpencodeAgentTask,
 };

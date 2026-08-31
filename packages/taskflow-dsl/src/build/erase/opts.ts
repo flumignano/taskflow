@@ -164,7 +164,7 @@ export function mergeOpts(
 			continue;
 		}
 		if (
-			key === "retry" || key === "expect" || key === "tools" ||
+			key === "retry" || key === "expect" || key === "tools" || key === "skills" ||
 			key === "context" || key === "contextLimit" || key === "onBlock" || key === "eval" ||
 			key === "score" || key === "cache" || key === "shareContext"
 		) {

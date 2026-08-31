@@ -317,7 +317,7 @@ import { flow, agent, map, json } from "taskflow-dsl";
 export default flow("map-options", () => {
   const seed = agent("seed", { output: json<string[]>() });
   return map(seed, (item) => agent("work", {
-    model: "m", thinking: "high", tools: ["read"], cwd: "/tmp",
+    model: "m", thinking: "high", tools: ["read"], skills: ["skill-a"], cwd: "/tmp",
     retry: { max: 2 }, timeout: 1000, context: ["README.md"], shareContext: true,
   }));
 });
@@ -327,6 +327,7 @@ export default flow("map-options", () => {
 	assert.equal(mapped?.model, "m");
 	assert.equal(mapped?.thinking, "high");
 	assert.deepEqual(mapped?.tools, ["read"]);
+	assert.deepEqual(mapped?.skills, ["skill-a"]);
 	assert.equal(mapped?.cwd, "/tmp");
 	assert.deepEqual(mapped?.retry, { max: 2 });
 	assert.equal(mapped?.timeout, 1000);

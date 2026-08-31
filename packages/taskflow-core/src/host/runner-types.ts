@@ -20,6 +20,9 @@
 
 import type { UsageStats } from "../usage.ts";
 
+/** Agent-body integration modes a host runner may support. */
+export type SystemPromptMode = "append" | "replace";
+
 /**
  * Minimal structural `Message` shape the core parser needs. Vendored (instead of
  * importing `@earendil-works/pi-ai`) so `taskflow-core` stays host-SDK-free. A
@@ -85,11 +88,28 @@ export interface LiveUpdate {
 	model?: string;
 }
 
+/** Exact host-resolved skill input supplied to one child launch. */
+export interface ResolvedSkill {
+	name: string;
+	/** Canonical path to the exact skill file the host must load. */
+	filePath: string;
+	/** Deterministic content identity folded into phase cache keys. */
+	contentHash: string;
+}
+
+/** Host capability for resolving authored skill names before cache lookup/spawn. */
+export type SkillResolver = (
+	names: readonly string[],
+	cwd: string,
+) => ResolvedSkill[] | Promise<ResolvedSkill[]>;
+
 /** Per-run knobs the engine passes to whichever host runner executes the task. */
 export interface RunOptions {
 	model?: string;
 	thinking?: string;
 	tools?: string[];
+	/** Undefined preserves host ambient behavior; [] explicitly selects no skills. */
+	skills?: ResolvedSkill[];
 	cwd?: string;
 	signal?: AbortSignal;
 	/** Fires on each assistant turn with the latest activity + accumulated usage. */
@@ -128,6 +148,11 @@ export interface SubagentRunner<TAgent = unknown> {
 	/** Whether this host reports authoritative token/cost usage. `unavailable`
 	 * makes runtime budget declarations fail closed at every execution boundary. */
 	readonly usageAccounting?: "available" | "tokens-only" | "unavailable";
+	/** Host-owned prompt integration capability. Omission is treated as append-only;
+	 * an explicit agent `replace` request must fail closed before result reuse. */
+	readonly systemPromptModes?: readonly SystemPromptMode[];
+	/** Optional host capability. Omission makes an explicit phase `skills` selection fail closed. */
+	readonly resolveSkills?: SkillResolver;
 	runTask(
 		defaultCwd: string,
 		agents: TAgent[],

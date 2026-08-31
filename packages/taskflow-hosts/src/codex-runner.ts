@@ -43,6 +43,7 @@ import {
 } from "taskflow-core";
 import { emptyUsage } from "taskflow-core";
 import { filteredChildEnv } from "./child-env.ts";
+import { unsupportedSystemPromptModeResult } from "./system-prompt-mode.ts";
 
 /** Benign codex `error` items that are warnings, not failures. Matched as a
  *  prefix/substring so version drift in the message tail still classifies. */
@@ -251,6 +252,8 @@ export async function runCodexAgentTask(
 ): Promise<RunResult> {
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) return unknownAgentResult(agentName, task, agents);
+	const promptModeError = unsupportedSystemPromptModeResult(agent, task, "Codex");
+	if (promptModeError) return promptModeError;
 
 	const model = opts.model ?? agent.model;
 	const tools = opts.tools ?? agent.tools;
@@ -305,6 +308,7 @@ export async function runCodexAgentTask(
  * like the pi/codex/claude/opencode runners, so the engine runs unchanged on Codex.
  */
 export const codexSubagentRunner: SubagentRunner<AgentConfig> = {
+	systemPromptModes: ["append"],
 	runTask: runCodexAgentTask,
 	usageAccounting: "tokens-only",
 };

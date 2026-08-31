@@ -955,6 +955,8 @@ export function makeToolHandlers(
 				agents,
 				globalThinking: settings.globalThinking,
 				runTask: runner.runTask,
+				systemPromptModes: runner.systemPromptModes,
+				resolveSkills: runner.resolveSkills,
 				signal: context?.signal,
 				usageAccounting,
 				cwdBridgeMode: cwdBridgeModeFromEnv(),
@@ -1160,6 +1162,8 @@ export function makeToolHandlers(
 				agents,
 				globalThinking: settings.globalThinking,
 				runTask: runner.runTask,
+				systemPromptModes: runner.systemPromptModes,
+				resolveSkills: runner.resolveSkills,
 				signal: context?.signal,
 				usageAccounting: runner.usageAccounting,
 				cwdBridgeMode: cwdBridgeModeFromEnv(),
@@ -1272,7 +1276,7 @@ export function makeToolHandlers(
 			const run = runR.value;
 			const settings = readSubagentSettings();
 			const { agents } = discoverAgents(cwd, "both", settings.modelRoles, settings.taskflow);
-			const deps: RuntimeDeps = { cwd, agents, runTask: runner.runTask, signal: context?.signal };
+			const deps: RuntimeDeps = { cwd, agents, runTask: runner.runTask, systemPromptModes: runner.systemPromptModes, resolveSkills: runner.resolveSkills, signal: context?.signal };
 			const { report } = await recomputeTaskflow(run, deps, [phaseId], { dryRun: true });
 			return textContent(formatRecomputeMcp(report));
 		},

@@ -25,7 +25,7 @@ import {
 
 // Re-export the host-neutral execution contract types so importers of the
 // runner surface get them from one place.
-export type { CoreMessage, LiveUpdate, RunOptions, RunResult, SubagentRunner } from "./host/runner-types.ts";
+export type { CoreMessage, LiveUpdate, ResolvedSkill, RunOptions, RunResult, SkillResolver, SubagentRunner } from "./host/runner-types.ts";
 
 export function isFailed(r: RunResult): boolean {
 	return r.exitCode !== 0 || Boolean(r.errorMessage) || r.stopReason === "error" || r.stopReason === "aborted";

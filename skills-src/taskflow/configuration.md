@@ -12,9 +12,9 @@ Configuration lives in **five layers**, from most local to most global:
 
 | Layer | Where | Sets |
 |-------|-------|------|
-| Phase | a phase object in the DSL | per-step model/thinking/tools/cwd/output/concurrency |
+| Phase | a phase object in the DSL | per-step model/thinking/tools/skills/cwd/output/concurrency |
 | Flow | the top-level DSL object | name, args, default concurrency, agent scope |
-| Agent | `~/.pi/agent/agents/*.md`, `.pi/agents/*.md` frontmatter | per-agent default model/thinking/tools + system prompt |
+| Agent | `~/.pi/agent/agents/*.md`, `.pi/agents/*.md` frontmatter | per-agent default model/thinking/tools + system prompt mode/body |
 | Settings | `~/.pi/agent/settings.json` | `modelRoles`, global thinking |
 | Environment | shell env | `PI_TASKFLOW_PI_BIN` |
 
@@ -76,6 +76,7 @@ Keys of each object in `phases[]`. Some only apply to specific `type`s.
   "model": "claude-sonnet-4-5",   // per-phase model override
   "thinking": "high",       // per-phase thinking override
   "tools": ["read","bash"], // restrict tools for this phase's subagent
+  "skills": ["taskflow-skill-smoke"], // [Pi] exact project skill selection
   "cwd": "packages/api",    // working directory for this phase's subagent
   "concurrency": 4,         // [map/parallel] fan-out cap for THIS phase
   "final": true             // mark this phase's output as the workflow result
@@ -110,6 +111,7 @@ Keys of each object in `phases[]`. Some only apply to specific `type`s.
 | `model` | all | agent/global | Per-phase model override. See §5. |
 | `thinking` | all | agent/global | Per-phase thinking level. See §5. |
 | `tools` | all | agent default | Whitelist of tools for the subagent. See §5. |
+| `skills` | agent-running | omitted | **Pi-only.** Exact project skill names. Omitted keeps ambient Pi discovery; `[]` disables ambient skills; a non-empty array exposes only the selected skills. Unsupported hosts fail before child launch. |
 | `cwd` | all | flow cwd | Run this phase's subagent in a different directory. |
 | `concurrency` | map, parallel | flow concurrency | Fan-out cap for this phase only. See §4. |
 | `context` | all | — | File paths / `{steps.X}` refs to **pre-read and inject** before the task. See §2.1. |
@@ -288,7 +290,7 @@ keep `flow.concurrency` higher to let independent phases overlap.
 
 ---
 
-## 5. Model, thinking & tools resolution
+## 5. Model, thinking, tools & Pi worker resources
 
 For any phase, the effective value is resolved in this **precedence order**
 (first defined wins):
@@ -297,16 +299,39 @@ For any phase, the effective value is resolved in this **precedence order**
 |---------|-------------------------|
 | **model** | `phase.model` → agent frontmatter `model` (resolved via `modelRoles`) → pi default |
 | **thinking** | `phase.thinking` → agent frontmatter `thinking` → `settings` global thinking → pi default |
-| **tools** | `phase.tools` → agent frontmatter `tools` → host default capability policy |
+| **tools** | if the agent declares `tools`, `phase.tools` may only be a subset; otherwise `phase.tools` → agent frontmatter `tools` → host default capability policy |
 
 Notes:
-- `tools` expresses the requested capability set, but enforcement is
-  host-specific. It is a literal whitelist on Pi; Codex maps it to an OS
-  sandbox profile, while the other hosts use their own permission contracts.
-  Omit it to request the host's default capability policy.
+- An agent frontmatter `tools` list is a capability ceiling. Omitting
+  `phase.tools` uses that list; a phase may request a subset (including the exact
+  same set), but any unauthorized expansion fails before cache lookup or child
+  launch. An agent with no declared `tools` keeps the legacy phase override
+  semantics. Skill selection and prompt mode never grant tools.
+- Tool enforcement remains host-specific after the ceiling check. Pi uses a
+  literal allowlist; Codex maps it to an OS sandbox profile, while the other
+  hosts use their own permission contracts. Omit both agent and phase tools to
+  request the host's default capability policy.
+- `skills` is a Pi-only phase field in this slice. On every other host, an
+  explicit selection (including `[]`) fails closed before the host runner is
+  called; it is never silently ignored.
 <!-- host:pi -->
-- Each phase runs as an isolated process:
-  `pi --mode json -p --no-session [--model …] [--thinking …] [--tools …] [--append-system-prompt <agent>] "Task: …"`.
+- Each phase runs as an isolated process. The relevant launch controls are
+  `[--tools …|--no-tools]`, `[--append-system-prompt <agent>|--system-prompt <agent>]`,
+  and, for explicit skills, `--no-skills [--skill <exact-path> …]`.
+- `skills` semantics:
+  - omitted → preserve ordinary ambient Pi skill discovery (no `--no-skills`);
+  - `[]` → pass `--no-skills`;
+  - `["skill-a", "skill-b"]` → pass `--no-skills` and one `--skill` per exact
+    resolved file, preserving declared order.
+- Names use the Agent Skills identifier rules (1–64 lowercase letters, numbers,
+  and single hyphens). Resolution searches only the nearest project-owned
+  `.pi/skills` tree relevant to the phase's effective cwd, matches exact skill
+  frontmatter names, rejects symlinks/path escapes, and fails on unknown,
+  ambiguous, malformed, or inaccessible selections. A non-empty selection
+  cannot be combined with per-branch cwd; use one phase-level cwd.
+- The exact resolved path and SHA-256 of each selected `SKILL.md` are folded into
+  the phase input/cache identity. Changing a selected skill body or resolution
+  cannot reuse the previous cross-run result.
 <!-- /host:pi -->
 <!-- host:codex -->
 - Each phase runs as an isolated `codex exec --json` session. A model id that
@@ -412,7 +437,7 @@ Notes:
 For Codex, OpenCode, Grok, or Hermes, an operator can intentionally pass additional
 task-specific environment variables by listing their names in the
 comma-separated `PI_TASKFLOW_CHILD_ENV_ALLOW` setting.
-- The agent's markdown body becomes the subagent's appended system prompt.
+- The agent Markdown body remains the host runner's system-prompt input. Pi additionally supports explicit append/replace prompt construction.
 
 ---
 
@@ -427,7 +452,28 @@ comma-separated `PI_TASKFLOW_CHILD_ENV_ALLOW` setting.
 | `both` | user **then** project (project overrides on name collision) |
 
 - Agents are `.md` files with frontmatter `name` + `description` (required), plus
-  optional `model`, `thinking`, `tools`. The body is the system prompt.
+  optional `model`, `thinking`, `tools`, and Pi `systemPromptMode`. The body is
+  the system-prompt content.
+
+<!-- host:pi -->
+```yaml
+---
+name: file-reader
+description: Minimal read-only worker
+tools: read
+systemPromptMode: replace
+---
+
+You are a minimal read-only delegated worker.
+```
+
+`systemPromptMode` accepts only `append` or `replace`; invalid values fail agent
+configuration. `append` is the default and preserves the legacy
+`--append-system-prompt` behavior. `replace` uses Pi's `--system-prompt`
+mechanism, so the body replaces Pi's default prompt and is not also appended.
+Replacement does **not** imply `--no-context-files`, `--no-skills`, or
+`--no-extensions`; those ordinary Pi resources keep their independent policy.
+<!-- /host:pi -->
 - Reference agents in phases by their `name`. An unknown name fails that phase
   with the list of available agents.
 - If a phase omits `agent`, the **first discovered agent** is used.
@@ -563,8 +609,9 @@ Each entry is one of:
   hit** are written to the store (no re-storing a value just read).
 - The store is keyed by the full input hash + fingerprint, tagged with
   `flowName`/`phaseId`/`runId`/`model` for inspection and LRU eviction.
-- Cross-run reuse is **safe by construction**: a different agent, model, task, or
-  fingerprint produces a different key, so stale results are never served.
+- Cross-run reuse is **safe by construction**: a different agent prompt mode,
+  selected skill set/body/resolution, model, task, or fingerprint produces a
+  different key, so stale results are never served.
 
 > **When to use it:** expensive, deterministic phases whose inputs rarely change
 > (dependency summaries, doc generation, repeated audits of the same tree). For
@@ -711,7 +758,7 @@ rely on them for behavior:
 - `flow.version` — informational only; it does not select runtime semantics.
 - **Event kernel** (`eventKernel` / `PI_TASKFLOW_EVENT_KERNEL=1`) — opt-in; does
   **not** run `race`/`expand`; score gates, `retry`, `expect`, reflexion,
-  cross-run cache, and Shared Context Tree force the **imperative** path.
+  cross-run cache, explicit Pi `skills`, and Shared Context Tree force the **imperative** path.
 - **`taskflow-dsl decompile`** — generates safe, readable TypeScript whose
   rebuilt Taskflow/FlowIR is semantically equivalent for supported constructs;
   dependencies are emitted before consumers even when input JSON is out of

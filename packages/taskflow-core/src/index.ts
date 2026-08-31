@@ -47,6 +47,8 @@ export * from "./final-output.ts";
 export * from "./build-info.ts";
 export * from "./resume.ts";
 export * from "./agents.ts";
+export { findProjectDotPiDir, type ProjectDotPiHit } from "./discovery-boundary.ts";
+export { parseFrontmatter } from "./frontmatter.ts";
 export * from "./library/types.ts";
 export * from "./library/meta.ts";
 export * from "./library/search.ts";

@@ -271,6 +271,8 @@ try {
 		globalThinking: ctx.globalThinking ?? settings.globalThinking,
 		persist: (s) => saveRun(s, cleanupConfig),
 		runTask: injectedRunner?.runTask,
+		systemPromptModes: injectedRunner?.systemPromptModes,
+		resolveSkills: injectedRunner?.resolveSkills,
 		usageAccounting: injectedRunner?.usageAccounting,
 		signal: abortController.signal,
 		trace: new FileTraceSink(traceFilePath(runsDir(ctx.cwd), state.flowName, state.runId)),

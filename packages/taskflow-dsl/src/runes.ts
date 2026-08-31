@@ -58,6 +58,8 @@ export interface PhaseOptions<TJson = unknown> {
 	model?: string;
 	thinking?: string;
 	tools?: string[];
+	/** Pi-only exact project skill names. Omit for ambient discovery; [] disables ambient skills. */
+	skills?: string[];
 	cwd?: string;
 	/** Load-time include path; mutually exclusive with a positional task string. */
 	taskFile?: string;

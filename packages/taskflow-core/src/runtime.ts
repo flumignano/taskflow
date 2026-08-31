@@ -12,11 +12,12 @@
 
 import * as path from "node:path";
 import * as fs from "node:fs";
-import type { AgentConfig } from "./agents.ts";
+import { agentToolExpansionError, type AgentConfig } from "./agents.ts";
 import { coerceArray, evaluateCondition, interpolate, interpolateValue, type InterpolationContext, safeParse, tryEvaluateCondition } from "./interpolate.ts";
 import { contractViolations } from "./contract.ts";
 import { failedResultDisplayOutput, hasMeaningfulFailedOutput, isFailed, isTransientError, mapWithConcurrencyLimit, PHASE_TIMEOUT_ABORT_GRACE_MS, sanitizeErrorMessage } from "./runner-core.ts";
-import type { LiveUpdate, RunResult, SubagentRunner } from "./host/runner-types.ts";
+import type { LiveUpdate, ResolvedSkill, RunResult, SkillResolver, SubagentRunner, SystemPromptMode } from "./host/runner-types.ts";
+import { systemPromptModeAdmissionFailure } from "./host-capabilities.ts";
 
 /** The host-neutral subagent runner signature the engine drives. A host adapter
  *  (pi, codex) injects a concrete `runTask` via `RuntimeDeps`. */
@@ -36,7 +37,7 @@ const noRunnerInjected: RunTaskFn = async (_cwd, _agents, agentName, task) => ({
 });
 export { PHASE_TIMEOUT_ABORT_GRACE_MS } from "./runner-core.ts";
 import { aggregateUsage, emptyUsage, type UsageStats } from "./usage.ts";
-import { type Budget, type CacheScope, asArray, dependenciesOf, LOOP_DEFAULT_MAX_ITERATIONS, LOOP_HARD_MAX_ITERATIONS, MAX_DYNAMIC_MAP_ITEMS, MAX_DYNAMIC_NESTING, MAX_DYNAMIC_PHASES, parseTtlMs, type Phase, resolveArgs, type Taskflow, topoLayers, TOURNAMENT_DEFAULT_VARIANTS, TOURNAMENT_HARD_MAX_VARIANTS, type TournamentMode, validateInvocationArgs, validateTaskflow } from "./schema.ts";
+import { AGENT_RUNNING_PHASE_TYPES, type Budget, type CacheScope, asArray, dependenciesOf, LOOP_DEFAULT_MAX_ITERATIONS, LOOP_HARD_MAX_ITERATIONS, MAX_DYNAMIC_MAP_ITEMS, MAX_DYNAMIC_NESTING, MAX_DYNAMIC_PHASES, parseTtlMs, type Phase, resolveArgs, type Taskflow, topoLayers, TOURNAMENT_DEFAULT_VARIANTS, TOURNAMENT_HARD_MAX_VARIANTS, type TournamentMode, validateInvocationArgs, validateTaskflow } from "./schema.ts";
 import { verifyTaskflow, pluginVerifierErrors, formatPluginIssueMessages, type TaskflowVerifier } from "./verify.ts";
 import { combineScores, combineWithJudge, evaluatePureScorer, formatScorerReport, parseJudgeOutput, SCORE_DEFAULT_THRESHOLD, type ScoreConfig, scoreResultJSON, type ScorerResult, scorerShapeErrors } from "./scorers.ts";
 import { parseGateVerdict, overBudget as overBudgetCheck, parseTournamentWinner, type BudgetCheckInput } from "./deterministic.ts";
@@ -99,6 +100,9 @@ export interface RuntimeDeps {
 	 *  cannot observe usage must reject every actually-executed budgeted flow,
 	 *  including nested/dynamic flows, rather than silently bypassing the cap. */
 	usageAccounting?: "available" | "tokens-only" | "unavailable";
+	/** Host-owned prompt integration modes. Omission is append-only; explicit
+	 * agent replacement requests fail closed before cache/resume admission. */
+	systemPromptModes?: readonly SystemPromptMode[];
 	signal?: AbortSignal;
 	/** Persist run state after each phase (for resume). */
 	persist?: (state: RunState) => void;
@@ -106,6 +110,8 @@ export interface RuntimeDeps {
 	onProgress?: (state: RunState) => void;
 	/** Injectable task runner (defaults to spawning a real subagent). Enables testing. */
 	runTask?: RunTaskFn;
+	/** Host-owned exact skill-name resolver. Omission rejects explicit phase.skills. */
+	resolveSkills?: SkillResolver;
 	/** Resolve an `approval` phase. Omit for non-interactive runs (auto-reject). */
 	requestApproval?: (req: ApprovalRequest) => Promise<ApprovalDecision>;
 	/** Legacy definition-only loader. Prefer `loadSavedFlow` when file-backed
@@ -1548,6 +1554,17 @@ async function executePhaseInner(
 	// upstream in the executePhase wrapper).
 	const effCwd = resolveEffCwd(deps, phase);
 
+	// Agent-declared tools are a capability ceiling. Reject an invalid phase
+	// override before cache lookup so stale results cannot mask the expansion.
+	if ((AGENT_RUNNING_PHASE_TYPES as readonly string[]).includes(type) && phase.tools !== undefined) {
+		for (const agentName of phaseAgentNames(phase, deps, state)) {
+			const configured = deps.agents.find((agent) => agent.name === agentName);
+			if (!configured) continue;
+			const error = agentToolExpansionError(configured, phase.tools);
+			if (error) return failPhase(phase.id, error);
+		}
+	}
+
 	// Shared Context Tree opt-in (per-phase or flow-wide). When on, the subagent
 	// gets ctx_* tools backed by a per-run blackboard directory. nodeId is
 	// deterministic per phase so a resume re-uses the same tree node (idempotent
@@ -1612,6 +1629,31 @@ async function executePhaseInner(
 	// existing flows from reading authored source files.
 	const preRead = await resolvePhaseContext(phase, ctx, deps.cwd, deps._cwdBoundary);
 
+
+	let resolvedSkills: ResolvedSkill[] | undefined;
+	if (phase.skills !== undefined) {
+		if (!deps.resolveSkills) {
+			return failPhase(phase.id, `Explicit skills are not supported by the active host (phase '${phase.id}')`);
+		}
+		try {
+			resolvedSkills = await deps.resolveSkills(phase.skills, effCwd);
+			if (
+				resolvedSkills.length !== phase.skills.length ||
+				resolvedSkills.some((skill, index) =>
+					skill.name !== phase.skills?.[index] ||
+					typeof skill.filePath !== "string" || skill.filePath.length === 0 ||
+					typeof skill.contentHash !== "string" || skill.contentHash.length === 0)
+			) {
+				throw new Error("host skill resolver returned a malformed or reordered selection");
+			}
+		} catch (error) {
+			return failPhase(
+				phase.id,
+				`Explicit skill selection failed for phase '${phase.id}': ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
 	// Resolve this phase's cache policy once. Default scope is "run-only" (the
 	// historical within-run resume behavior). Only "cross-run" phases resolve a
 	// fingerprint and consult the persistent store.
@@ -1659,6 +1701,9 @@ async function executePhaseInner(
 		forceRerun: opts?.forceRerun,
 		thinking: phase.thinking ?? deps.globalThinking,
 		tools: phase.tools,
+		skillIdentity: resolvedSkills === undefined
+			? undefined
+			: JSON.stringify(resolvedSkills.map(({ name, filePath, contentHash }) => ({ name, filePath, contentHash }))),
 		preRead,
 		agentScope: state.def.agentScope,
 		contextSharing: state.def.contextSharing === true,
@@ -1682,6 +1727,33 @@ async function executePhaseInner(
 		onTerminalCommit?: () => void,
 	) => {
 		const invocationCwd = callCwd ? path.resolve(deps.cwd, callCwd) : effCwd;
+		const configuredAgent = deps.agents.find((agent) => agent.name === agentName);
+		const toolError = configuredAgent ? agentToolExpansionError(configuredAgent, phase.tools) : undefined;
+		if (toolError) {
+			return Promise.resolve({
+				agent: agentName,
+				task,
+				exitCode: 1,
+				output: "",
+				stderr: toolError,
+				usage: emptyUsage(),
+				stopReason: "error",
+				errorMessage: toolError,
+			});
+		}
+		if (callCwd && (phase.skills?.length ?? 0) > 0) {
+			const error = "TF_SKILL_BRANCH_CWD_CONFLICT: explicit skills require one phase-level effective cwd";
+			return Promise.resolve({
+				agent: agentName,
+				task,
+				exitCode: 1,
+				output: "",
+				stderr: error,
+				usage: emptyUsage(),
+				stopReason: "error",
+				errorMessage: error,
+			});
+		}
 		// A per-branch cwd cannot replace a phase-level workspace/cwd-bridge
 		// binding: that would bypass the binding's containment/dirty-state
 		// lifecycle. Validation rejects this shape; keep a runtime fail-closed
@@ -1718,6 +1790,7 @@ async function executePhaseInner(
 			model: phase.model,
 			thinking: phase.thinking,
 			tools: phase.tools,
+			skills: resolvedSkills,
 			cwd: invocationCwd,
 			signal: signal ?? deps.signal,
 			onLive,
@@ -3117,6 +3190,18 @@ async function executePhaseInner(
 				return failPhase(phase.id, `dynamic nested flow '${subDef.name}' is invalid: ${dynamicChild.errors.join("; ")}`);
 			}
 		}
+		const nestedPromptModeFailure = systemPromptModeAdmissionFailure(
+			subDef,
+			deps.agents,
+			deps.systemPromptModes,
+			{ loadFlow: deps.loadFlow, args: subArgs },
+		);
+		if (nestedPromptModeFailure) {
+			return failPhase(
+				phase.id,
+				`flow phase '${phase.id}': sub-flow '${subDef.name}' failed host capability admission: ${nestedPromptModeFailure.error}`,
+			);
+		}
 		// Re-check the exact loaded definition at the cache boundary. A loader may
 		// change between the root pre-scan and this phase (or return aliases), and
 		// a bridge-bearing child must never be skipped by a cached parent result.
@@ -3836,6 +3921,8 @@ export interface PhaseCacheCtx {
 	 *  silently serve a stale cross-run hit). */
 	thinking?: string;
 	tools?: string[];
+	/** Exact resolved skill identities. Undefined preserves legacy cache-key shape. */
+	skillIdentity?: string;
 	/** Resolved `context` pre-read content. Explicitly part of the cache identity
 	 *  so a context-file change always invalidates the phase — independent of
 	 *  whether a given branch happens to fold preRead into its task string
@@ -3877,6 +3964,7 @@ export function agentDefinitionsIdentity(agents: readonly AgentConfig[]): string
 				name: a.name,
 				description: a.description,
 				systemPrompt: a.systemPrompt,
+				...(a.systemPromptMode === "replace" ? { systemPromptMode: "replace" } : {}),
 				model: a.model ?? "",
 				thinking: a.thinking ?? "",
 				tools: [...(a.tools ?? [])].sort(),
@@ -3930,6 +4018,7 @@ export function cacheKeys(cc: PhaseCacheCtx, baseParts: string[]): CacheKeys {
 		...baseParts,
 		`think:${cc.thinking ?? ""}`,
 		`tools:${JSON.stringify(cc.tools ?? [])}`,
+		...(cc.skillIdentity === undefined ? [] : [`skills:${cc.skillIdentity}`]),
 		`ctx:${cc.preRead ?? ""}`,
 		`agent-scope:${cc.agentScope ?? "user"}`,
 		`context-sharing:${cc.contextSharing === true ? "1" : "0"}`,
@@ -4025,6 +4114,19 @@ function recordCache(cc: PhaseCacheCtx, ps: PhaseState): void {
 		phaseId: cc.phaseId,
 		runId: cc.runId,
 	});
+}
+
+
+function phaseAgentNames(phase: Phase, deps: RuntimeDeps, state: RunState): string[] {
+	const type = phase.type ?? "agent";
+	const authored: Array<string | undefined> = [];
+	if ((type === "parallel" || type === "race" || type === "tournament") && (phase.branches?.length ?? 0) > 0) {
+		for (const branch of phase.branches ?? []) authored.push(branch.agent ?? phase.agent);
+	} else {
+		authored.push(phase.agent);
+	}
+	if (type === "tournament") authored.push(phase.judgeAgent ?? phase.agent);
+	return [...new Set(authored.map((name) => resolveAgent(name, deps, state)))];
 }
 
 /**
@@ -4214,6 +4316,15 @@ export async function recomputeTaskflow(
 	const invocationErrors = validateInvocationArgs(newState.def, newState.args);
 	if (invocationErrors.length > 0) {
 		throw new Error(`Taskflow '${newState.def.name}' invocation is invalid: ${invocationErrors.join("; ")}`);
+	}
+	const promptModeFailure = systemPromptModeAdmissionFailure(
+		newState.def,
+		deps.agents,
+		deps.systemPromptModes,
+		{ loadFlow: deps.loadFlow, args: newState.args },
+	);
+	if (promptModeFailure) {
+		throw new Error(`Taskflow '${newState.def.name}' failed host capability admission: ${promptModeFailure.error}`);
 	}
 	const bridgeTree = flowTreeUsesCwdBridge(newState.def, deps.loadFlow);
 	// Once a run has exercised the compatibility bridge, its persisted root
@@ -4438,6 +4549,37 @@ export async function executeTaskflow(state: RunState, deps: RuntimeDeps): Promi
 			return failBeforeExecution(`Dynamic taskflow '${def.name}' is invalid: ${dynamicValidation.errors.join("; ")}`);
 		}
 	}
+
+	const promptModeFailure = systemPromptModeAdmissionFailure(
+		def,
+		deps.agents,
+		deps.systemPromptModes,
+		{ loadFlow: deps.loadFlow, args: state.args },
+	);
+	if (promptModeFailure) {
+		state.phases[promptModeFailure.rootPhaseId] = {
+			id: promptModeFailure.rootPhaseId,
+			status: "failed",
+			error: promptModeFailure.error,
+			endedAt: Date.now(),
+			usage: emptyUsage(),
+		};
+		return failBeforeExecution(
+			`Taskflow '${def.name}' failed host capability admission: ${promptModeFailure.error}`,
+		);
+	}
+	// Host-independent capability preflight. This runs before event-kernel
+	// admission and before any cache lookup or child launch.
+	for (const phase of def.phases) {
+		const type = phase.type ?? "agent";
+		if (!(AGENT_RUNNING_PHASE_TYPES as readonly string[]).includes(type) || phase.tools === undefined) continue;
+		for (const agentName of phaseAgentNames(phase, deps, state)) {
+			const configured = deps.agents.find((agent) => agent.name === agentName);
+			if (!configured) continue;
+			const error = agentToolExpansionError(configured, phase.tools);
+			if (error) return failBeforeExecution(`Phase '${phase.id}' is invalid: ${error}`);
+		}
+	}
 	// A cwd bridge carries compatibility read-write authority. Until workspace
 	// state restoration exists, output-only cache hits could skip required file
 	// mutations or let downstream phases observe stale files. Disable cache and
@@ -4577,6 +4719,7 @@ export async function executeTaskflow(state: RunState, deps: RuntimeDeps): Promi
 				signal: deps.signal,
 				globalThinking: deps.globalThinking,
 				usageAccounting: deps.usageAccounting,
+				systemPromptModes: deps.systemPromptModes,
 				trace: deps.trace,
 				persist: deps.persist,
 				onProgress: deps.onProgress,
